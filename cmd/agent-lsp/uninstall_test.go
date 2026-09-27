@@ -101,7 +101,7 @@ Some content after.
 `
 	os.WriteFile(path, []byte(content), 0o644)
 
-	removed, skipped := cleanClaudeMDSection(path, false)
+	removed, skipped := cleanManagedSection(path, false)
 	if removed != 1 {
 		t.Errorf("expected removed=1, got %d", removed)
 	}
@@ -131,14 +131,14 @@ func TestCleanClaudeMDSection_NoSentinels(t *testing.T) {
 	path := filepath.Join(dir, "CLAUDE.md")
 	os.WriteFile(path, []byte("# Just a normal file\n"), 0o644)
 
-	removed, skipped := cleanClaudeMDSection(path, false)
+	removed, skipped := cleanManagedSection(path, false)
 	if removed != 0 || skipped != 1 {
 		t.Errorf("expected (0,1), got (%d,%d)", removed, skipped)
 	}
 }
 
 func TestCleanClaudeMDSection_MissingFile(t *testing.T) {
-	removed, skipped := cleanClaudeMDSection("/nonexistent/CLAUDE.md", false)
+	removed, skipped := cleanManagedSection("/nonexistent/CLAUDE.md", false)
 	if removed != 0 || skipped != 1 {
 		t.Errorf("expected (0,1), got (%d,%d)", removed, skipped)
 	}
@@ -173,7 +173,7 @@ func TestUninstallDryRun_NoSideEffects(t *testing.T) {
 
 	// Run dry-run on individual functions.
 	cleanMCPConfig(mcpPath, true)
-	cleanClaudeMDSection(claudePath, true)
+	cleanManagedSection(claudePath, true)
 	cleanSkillDirs(filepath.Join(dir, "skills"), true)
 	cleanPath(cacheDir, true)
 
@@ -250,4 +250,26 @@ func containsStr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestCleanManagedSection_RulesSentinels(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENTS.md")
+
+	content := "before\n<!-- agent-lsp:rules:start -->\nrules\n<!-- agent-lsp:rules:end -->\nafter\n"
+	os.WriteFile(path, []byte(content), 0o644)
+
+	removed, skipped := cleanManagedSection(path, false)
+	if removed != 1 || skipped != 0 {
+		t.Fatalf("expected (1,0), got (%d,%d)", removed, skipped)
+	}
+
+	result, _ := os.ReadFile(path)
+	resultStr := string(result)
+	if contains(resultStr, "agent-lsp:rules:start") || contains(resultStr, "rules\n") {
+		t.Error("rules managed section was not removed")
+	}
+	if !contains(resultStr, "before") || !contains(resultStr, "after") {
+		t.Error("surrounding content should be preserved")
+	}
 }

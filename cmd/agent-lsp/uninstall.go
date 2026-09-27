@@ -36,6 +36,7 @@ func runUninstall(args []string) {
 	mcpPaths := []string{
 		filepath.Join(cwd, ".mcp.json"),
 		filepath.Join(homeDir, ".claude", ".mcp.json"),
+		filepath.Join(homeDir, ".config", "mcp", "mcp.json"),
 		filepath.Join(cwd, ".cursor", "mcp.json"),
 		filepath.Join(cwd, ".vscode", "cline_mcp_settings.json"),
 		filepath.Join(cwd, ".gemini", "settings.json"),
@@ -53,11 +54,17 @@ func runUninstall(args []string) {
 	removed += r
 	skipped += s
 
-	// Step 3: CLAUDE.md managed section cleanup.
-	claudeMDPath := filepath.Join(homeDir, ".claude", "CLAUDE.md")
-	r, s = cleanClaudeMDSection(claudeMDPath, dryRun)
-	removed += r
-	skipped += s
+	// Step 3: Managed rules-section cleanup (Claude Code and Pi context files).
+	rulesPaths := []string{
+		filepath.Join(homeDir, ".claude", "CLAUDE.md"),
+		filepath.Join(cwd, "AGENTS.md"),
+		filepath.Join(homeDir, ".pi", "agent", "AGENTS.md"),
+	}
+	for _, p := range rulesPaths {
+		r, s = cleanManagedSection(p, dryRun)
+		removed += r
+		skipped += s
+	}
 
 	// Step 4: Cache directory cleanup.
 	cachePaths := []string{
@@ -160,24 +167,40 @@ func cleanSkillDirs(skillsDir string, dryRun bool) (int, int) {
 	return removedCount, 0
 }
 
-// cleanClaudeMDSection removes the managed section between sentinel comments
+// managedSentinels lists the sentinel pairs used by managed sections written by
+// `agent-lsp init`. Both pairs are handled so sections written by older versions
+// are still removed.
+var managedSentinels = [][2]string{
+	{"<!-- agent-lsp:rules:start -->", "<!-- agent-lsp:rules:end -->"},
+	{"<!-- agent-lsp:skills:start -->", "<!-- agent-lsp:skills:end -->"},
+}
+
+// cleanManagedSection removes the managed section between sentinel comments
 // from the given file. Returns (removed, skipped).
-func cleanClaudeMDSection(path string, dryRun bool) (int, int) {
+func cleanManagedSection(path string, dryRun bool) (int, int) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0, 1
 	}
 
 	content := string(data)
-	startMarker := "<!-- agent-lsp:skills:start -->"
-	endMarker := "<!-- agent-lsp:skills:end -->"
-
-	startIdx := strings.Index(content, startMarker)
-	if startIdx == -1 {
-		return 0, 1
+	var endMarker string
+	startIdx := -1
+	endIdx := -1
+	for _, pair := range managedSentinels {
+		s := strings.Index(content, pair[0])
+		if s == -1 {
+			continue
+		}
+		e := strings.Index(content, pair[1])
+		if e == -1 || e < s {
+			continue
+		}
+		endMarker = pair[1]
+		startIdx, endIdx = s, e
+		break
 	}
-	endIdx := strings.Index(content, endMarker)
-	if endIdx == -1 {
+	if startIdx == -1 {
 		return 0, 1
 	}
 
