@@ -161,7 +161,7 @@ Symbol edit tools (`replace_symbol_body`, `insert_after_symbol`, `insert_before_
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | stdio | `agent-lsp init` |
 | [Continue](https://continue.dev) | stdio | `agent-lsp init` |
 | [Cline](https://github.com/cline/cline) | stdio | `agent-lsp init` |
-| [Pi](https://github.com/badlogic/pi-mono) | stdio | `agent-lsp init` + `pi install npm:pi-mcp-adapter` |
+| [Pi](https://github.com/earendil-works/pi) | stdio | `agent-lsp init` + `pi install npm:pi-mcp-adapter` |
 | Any MCP client | HTTP+SSE | `agent-lsp --http --port 8080` |
 
 See [docs/getting-started/mcp-clients.md](./docs/getting-started/mcp-clients.md) for copy-paste configs.
@@ -335,7 +335,7 @@ agent-lsp init
 
 Detects language servers on your PATH, asks which AI tool you use, writes the correct MCP config, and installs skill awareness rules for your AI provider (CLAUDE.md for Claude Code, `.cursor/rules/` for Cursor, `.clinerules` for Cline, `.windsurfrules` for Windsurf, `GEMINI.md` for Gemini CLI, `AGENTS.md` for Pi). For CI or scripted use: `agent-lsp init --non-interactive`.
 
-For [Pi](https://github.com/badlogic/pi-mono), choose the project (`9`) or global (`10`) target. Pi has no built-in MCP support; `init` writes the shared standard MCP files that the [`pi-mcp-adapter`](https://www.npmjs.com/package/pi-mcp-adapter) package reads — project `.mcp.json` (same file Claude Code uses, so one config serves both) or global `~/.config/mcp/mcp.json`. Skill awareness rules go into `AGENTS.md` (project) or `~/.pi/agent/AGENTS.md` (global). Install the adapter once with `pi install npm:pi-mcp-adapter`.
+For [Pi](https://github.com/earendil-works/pi), choose the project (`9`) or global (`10`) target. Pi has no built-in MCP support; `init` writes the shared standard MCP files that the [`pi-mcp-adapter`](https://www.npmjs.com/package/pi-mcp-adapter) package reads — project `.mcp.json` (same file Claude Code uses, so one config serves both) or global `~/.config/mcp/mcp.json`. Skill awareness rules go into `AGENTS.md` (project) or `~/.pi/agent/AGENTS.md` (global). Install the adapter once with `pi install npm:pi-mcp-adapter`.
 
 #### One-command complete setup
 

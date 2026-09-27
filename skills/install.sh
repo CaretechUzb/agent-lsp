@@ -189,13 +189,13 @@ update_instruction_file() {
 }
 
 # Claude Code: ~/.claude/CLAUDE.md
-update_instruction_file "${HOME}/.claude/CLAUDE.md" "~/.claude/CLAUDE.md"
+update_instruction_file "${HOME}/.claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
 
 # OpenAI Codex and Pi (project): AGENTS.md in current working directory
 update_instruction_file "$(pwd)/AGENTS.md" "AGENTS.md"
 
 # Pi (user-level): ~/.pi/agent/AGENTS.md
-update_instruction_file "${HOME}/.pi/agent/AGENTS.md" "~/.pi/agent/AGENTS.md"
+update_instruction_file "${HOME}/.pi/agent/AGENTS.md" "$HOME/.pi/agent/AGENTS.md"
 
 # Gemini CLI: GEMINI.md in current working directory
 update_instruction_file "$(pwd)/GEMINI.md" "GEMINI.md"
