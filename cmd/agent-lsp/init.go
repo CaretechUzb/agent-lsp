@@ -42,6 +42,10 @@ func runInit(args []string) {
 		os.Exit(1)
 	}
 
+	// Single shared stdin reader for all prompts. Creating a new reader per
+	// prompt loses buffered input when stdin is piped or scripted.
+	reader := bufio.NewReader(os.Stdin)
+
 	// Step 3: Present servers and ask which to include.
 	selected := cfg.Servers
 	if !nonInteractive {
@@ -49,7 +53,6 @@ func runInit(args []string) {
 		for i, entry := range cfg.Servers {
 			fmt.Printf("  %d. %-12s %s\n", i+1, entry.LanguageID, filepath.Base(entry.Command[0]))
 		}
-		reader := bufio.NewReader(os.Stdin)
 		fmt.Print("Include all detected servers? [Y/n]: ")
 		answer, _ := reader.ReadString('\n')
 		answer = strings.TrimSpace(answer)
@@ -86,7 +89,6 @@ func runInit(args []string) {
 		fmt.Println("  8. Custom path")
 		fmt.Println("  9. Pi           (project .mcp.json in current directory)")
 		fmt.Println(" 10. Pi           (global ~/.config/mcp/mcp.json)")
-		reader := bufio.NewReader(os.Stdin)
 		fmt.Print("Choice [1-10]: ")
 		line, _ := reader.ReadString('\n')
 		line = strings.TrimSpace(line)
