@@ -233,3 +233,44 @@ func TestWriteManagedSection_PiRulesSentinels(t *testing.T) {
 		t.Error("managed section was not replaced on second write")
 	}
 }
+
+func TestGenerateRulesContent_ProviderSkillHint(t *testing.T) {
+	generic := generateRulesContent()
+	if !strings.Contains(generic, "prompts/get") {
+		t.Error("generic rules should mention prompts/get")
+	}
+	if strings.Contains(generic, "/mcp__agent-lsp__") {
+		t.Error("generic rules should not mention Pi slash commands")
+	}
+
+	claude := generateRulesContent(rulesTargetClaudeCode)
+	if !strings.Contains(claude, "prompts/get") {
+		t.Error("Claude Code rules should mention prompts/get")
+	}
+
+	pi := generateRulesContent(rulesTargetPi)
+	if !strings.Contains(pi, "/mcp__agent-lsp__") {
+		t.Error("Pi rules should mention /mcp__agent-lsp__ slash commands")
+	}
+	if strings.Contains(pi, "prompts/get") {
+		t.Error("Pi rules should not reference raw prompts/get")
+	}
+	if !strings.Contains(pi, "activate_skill") {
+		t.Error("Pi rules should mention the activate_skill tool")
+	}
+}
+
+func TestRulesTarget(t *testing.T) {
+	if got := selectRulesTarget(true, false); got != rulesTargetClaudeCode {
+		t.Errorf("rulesTarget(true,false) = %v, want rulesTargetClaudeCode", got)
+	}
+	if got := selectRulesTarget(false, true); got != rulesTargetPi {
+		t.Errorf("rulesTarget(false,true) = %v, want rulesTargetPi", got)
+	}
+	if got := selectRulesTarget(false, false); got != rulesTargetGeneric {
+		t.Errorf("rulesTarget(false,false) = %v, want rulesTargetGeneric", got)
+	}
+	if isPiChoice(9) != true || isPiChoice(10) != true || isPiChoice(1) != false {
+		t.Error("isPiChoice returned unexpected results")
+	}
+}

@@ -132,7 +132,7 @@ func runInit(args []string) {
 	rulesPath := resolveRulesPath(choice)
 	if rulesPath != "" {
 		isClaudeCode := choice == 1 || choice == 2
-		rulesContent := generateRulesContent(isClaudeCode)
+		rulesContent := generateRulesContent(selectRulesTarget(isClaudeCode, isPiChoice(choice)))
 		if isClaudeCode {
 			// Claude Code: inject managed section into CLAUDE.md.
 			if err := writeManagedSection(rulesPath, rulesContent); err != nil {
@@ -151,7 +151,7 @@ func runInit(args []string) {
 	}
 
 	// Step 9: Print result and next step.
-	isPi := choice == 9 || choice == 10
+	isPi := isPiChoice(choice)
 	data, err := os.ReadFile(targetPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading written config: %v\n", err)
@@ -313,11 +313,41 @@ func resolveRulesPath(choice int) string {
 	}
 }
 
+// rulesTarget selects how the rules content should point the agent at the
+// skill workflows, based on the provider's actual skill delivery mechanism.
+type rulesTarget int
+
+const (
+	rulesTargetGeneric rulesTarget = iota
+	rulesTargetClaudeCode
+	rulesTargetPi
+)
+
+func selectRulesTarget(isClaudeCode, isPi bool) rulesTarget {
+	switch {
+	case isClaudeCode:
+		return rulesTargetClaudeCode
+	case isPi:
+		return rulesTargetPi
+	default:
+		return rulesTargetGeneric
+	}
+}
+
+func isPiChoice(choice int) bool {
+	return choice == 9 || choice == 10
+}
+
 // generateRulesContent builds the skill awareness rules from embedded SKILL.md
-// files. When isClaudeCode is true, adds stronger enforcement language specific
-// to Claude Code's built-in tools (Read, Grep, Edit).
-func generateRulesContent(isClaudeCode ...bool) string {
-	claude := len(isClaudeCode) > 0 && isClaudeCode[0]
+// files. The rulesTarget tunes provider-specific guidance: Claude Code gets
+// stronger enforcement language against its built-in tools, and Pi gets the
+// slash-command route registered by pi-mcp-adapter instead of raw prompts/get.
+func generateRulesContent(target ...rulesTarget) string {
+	t := rulesTargetGeneric
+	if len(target) > 0 {
+		t = target[0]
+	}
+	claude := t == rulesTargetClaudeCode
 	var b strings.Builder
 	b.WriteString("## agent-lsp Skills\n\n")
 	b.WriteString("agent-lsp provides 66 code intelligence tools and 23 workflow skills.\n")
@@ -349,7 +379,14 @@ func generateRulesContent(isClaudeCode ...bool) string {
 		fmt.Fprintf(&b, "| `/%s` | %s |\n", meta.Name, desc)
 	}
 
-	b.WriteString("\nCall `prompts/get` with any skill name for full workflow instructions.\n")
+	switch t {
+	case rulesTargetPi:
+		// pi-mcp-adapter registers MCP prompts as Pi slash commands, and the
+		// server exposes activate_skill for phase enforcement.
+		b.WriteString("\nLoad full workflow instructions with `/mcp__agent-lsp__<skill>` slash commands (e.g. `/mcp__agent-lsp__lsp-refactor`), or call the `activate_skill` tool with a skill name to enable phase enforcement.\n")
+	default:
+		b.WriteString("\nCall `prompts/get` with any skill name for full workflow instructions.\n")
+	}
 	return b.String()
 }
 
