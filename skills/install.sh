@@ -33,6 +33,7 @@ Examples:
   $(basename "$0")                          # Claude Code (default)
   $(basename "$0") --dest ~/.cursor/skills  # Cursor
   $(basename "$0") --dest ~/.config/gemini-cli/skills  # Gemini CLI
+  $(basename "$0") --dest ~/.pi/agent/skills  # Pi
   $(basename "$0") --copy                   # Copy instead of symlink
   $(basename "$0") --dry-run                # Preview what would happen
 EOF
@@ -190,8 +191,11 @@ update_instruction_file() {
 # Claude Code: ~/.claude/CLAUDE.md
 update_instruction_file "${HOME}/.claude/CLAUDE.md" "~/.claude/CLAUDE.md"
 
-# OpenAI Codex: AGENTS.md in current working directory
+# OpenAI Codex and Pi (project): AGENTS.md in current working directory
 update_instruction_file "$(pwd)/AGENTS.md" "AGENTS.md"
+
+# Pi (user-level): ~/.pi/agent/AGENTS.md
+update_instruction_file "${HOME}/.pi/agent/AGENTS.md" "~/.pi/agent/AGENTS.md"
 
 # Gemini CLI: GEMINI.md in current working directory
 update_instruction_file "$(pwd)/GEMINI.md" "GEMINI.md"

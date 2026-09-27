@@ -364,9 +364,9 @@ git clone https://github.com/blackwell-systems/agent-lsp.git /tmp/agent-lsp-skil
 cd /tmp/agent-lsp-skills/skills && ./install.sh --copy
 ```
 
-Skills are prompt files copied into your AI tool's configuration. `--copy` means the clone can be safely deleted afterward.
+Skills are prompt files copied into your AI tool's configuration. `--copy` means the clone can be safely deleted afterward. The script defaults to `~/.claude/skills/`; pass `--dest` for other agents, e.g. `--dest ~/.pi/agent/skills` for Pi. It also appends a managed skills table to existing instruction files (`~/.claude/CLAUDE.md`, project `AGENTS.md`, `~/.pi/agent/AGENTS.md`, `GEMINI.md`).
 
-Skills are also available as **MCP prompts**: any MCP client can discover them via `prompts/list` and retrieve full workflow instructions via `prompts/get`, with no manual installation required. The `install.sh` path is for AgentSkills-compatible clients (Claude Code slash commands).
+Skills are also available as **MCP prompts**: any MCP client can discover them via `prompts/list` and retrieve full workflow instructions via `prompts/get`, with no manual installation required. The `install.sh` path is for AgentSkills-compatible clients (Claude Code slash commands, Pi `/skill:name` commands).
 
 ### Step 6: Allow tool permissions (Claude Code)
 
