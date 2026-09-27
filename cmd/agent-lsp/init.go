@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/blackwell-systems/agent-lsp/internal/config"
+	"github.com/blackwell-systems/agent-lsp/skills"
 )
 
 type mcpConfig struct {
@@ -27,9 +28,13 @@ type mcpServerEntry struct {
 // Does not return — uses os.Exit for fatal conditions.
 func runInit(args []string) {
 	nonInteractive := false
+	withSkills := false
 	for _, a := range args {
-		if a == "--non-interactive" {
+		switch a {
+		case "--non-interactive":
 			nonInteractive = true
+		case "--with-skills":
+			withSkills = true
 		}
 	}
 
@@ -150,7 +155,22 @@ func runInit(args []string) {
 		}
 	}
 
-	// Step 9: Print result and next step.
+	// Step 9: Install embedded skills when requested.
+	if withSkills {
+		skillsDest := resolveSkillsDest(choice)
+		if skillsDest == "" {
+			fmt.Println("--with-skills: no known skills directory for this target; install manually with skills/install.sh --dest")
+		} else {
+			n, err := skills.Install(skillsDest)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not install skills to %s: %v\n", skillsDest, err)
+			} else {
+				fmt.Printf("Installed %d skills to: %s\n", n, skillsDest)
+			}
+		}
+	}
+
+	// Step 10: Print result and next step.
 	isPi := isPiChoice(choice)
 	data, err := os.ReadFile(targetPath)
 	if err != nil {
@@ -336,6 +356,34 @@ func selectRulesTarget(isClaudeCode, isPi bool) rulesTarget {
 
 func isPiChoice(choice int) bool {
 	return choice == 9 || choice == 10
+}
+
+// resolveSkillsDest returns the skills directory for the given init choice,
+// or "" when the provider has no verified skills directory. Project-level
+// targets use the tool-agnostic AgentSkills location so the skill set can be
+// versioned with the repository; user-level targets use each provider's own
+// directory. All destinations mirror skills/install.sh documentation.
+func resolveSkillsDest(choice int) string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	homeDir, _ := os.UserHomeDir()
+
+	switch choice {
+	case 1, 2:
+		return filepath.Join(homeDir, ".claude", "skills")
+	case 4:
+		return filepath.Join(homeDir, ".cursor", "skills")
+	case 7:
+		return filepath.Join(homeDir, ".config", "gemini-cli", "skills")
+	case 9:
+		return filepath.Join(cwd, ".agents", "skills")
+	case 10:
+		return filepath.Join(homeDir, ".pi", "agent", "skills")
+	default:
+		return ""
+	}
 }
 
 // generateRulesContent builds the skill awareness rules from embedded SKILL.md

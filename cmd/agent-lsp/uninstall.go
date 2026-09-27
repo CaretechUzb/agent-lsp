@@ -48,11 +48,19 @@ func runUninstall(args []string) {
 		skipped += s
 	}
 
-	// Step 2: Skill symlink/directory cleanup.
-	skillsDir := filepath.Join(homeDir, ".claude", "skills")
-	r, s := cleanSkillDirs(skillsDir, dryRun)
-	removed += r
-	skipped += s
+	// Step 2: Skill directory cleanup (all managed destinations).
+	skillsDests := []string{
+		filepath.Join(homeDir, ".claude", "skills"),
+		filepath.Join(homeDir, ".pi", "agent", "skills"),
+		filepath.Join(homeDir, ".cursor", "skills"),
+		filepath.Join(homeDir, ".config", "gemini-cli", "skills"),
+		filepath.Join(cwd, ".agents", "skills"),
+	}
+	for _, dir := range skillsDests {
+		r, s := cleanSkillDirs(dir, dryRun)
+		removed += r
+		skipped += s
+	}
 
 	// Step 3: Managed rules-section cleanup (Claude Code and Pi context files).
 	rulesPaths := []string{
@@ -61,7 +69,7 @@ func runUninstall(args []string) {
 		filepath.Join(homeDir, ".pi", "agent", "AGENTS.md"),
 	}
 	for _, p := range rulesPaths {
-		r, s = cleanManagedSection(p, dryRun)
+		r, s := cleanManagedSection(p, dryRun)
 		removed += r
 		skipped += s
 	}
@@ -72,7 +80,7 @@ func runUninstall(args []string) {
 		filepath.Join(cwd, ".agent-lsp", "cache.db.gz"),
 	}
 	for _, p := range cachePaths {
-		r, s = cleanPath(p, dryRun)
+		r, s := cleanPath(p, dryRun)
 		removed += r
 		skipped += s
 	}

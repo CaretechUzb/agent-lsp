@@ -337,6 +337,16 @@ Detects language servers on your PATH, asks which AI tool you use, writes the co
 
 For [Pi](https://github.com/badlogic/pi-mono), choose the project (`9`) or global (`10`) target. Pi has no built-in MCP support; `init` writes the shared standard MCP files that the [`pi-mcp-adapter`](https://www.npmjs.com/package/pi-mcp-adapter) package reads — project `.mcp.json` (same file Claude Code uses, so one config serves both) or global `~/.config/mcp/mcp.json`. Skill awareness rules go into `AGENTS.md` (project) or `~/.pi/agent/AGENTS.md` (global). Install the adapter once with `pi install npm:pi-mcp-adapter`.
 
+#### One-command complete setup
+
+Add `--with-skills` to also install the embedded skill files (no repo clone needed):
+
+```bash
+agent-lsp init --with-skills
+```
+
+Skills are written to the destination matching the chosen target: project setups use the tool-agnostic `.agents/skills/` directory (versionable with the repo), Pi global uses `~/.pi/agent/skills/`, and Claude Code, Cursor, and Gemini CLI get their own documented skill directories. Providers without a verified skills directory are skipped with a pointer to `skills/install.sh --dest`. Re-running overwrites the managed skill files, keeping them in sync with the installed binary. `agent-lsp uninstall` removes them.
+
 The generated config looks like:
 
 ```json
@@ -363,6 +373,8 @@ Each arg is `language:server-binary` (comma-separate server args).
 git clone https://github.com/blackwell-systems/agent-lsp.git /tmp/agent-lsp-skills
 cd /tmp/agent-lsp-skills/skills && ./install.sh --copy
 ```
+
+Or skip the clone entirely: `agent-lsp init --with-skills` installs the same embedded skills to the destination matching your chosen target.
 
 Skills are prompt files copied into your AI tool's configuration. `--copy` means the clone can be safely deleted afterward. The script defaults to `~/.claude/skills/`; pass `--dest` for other agents, e.g. `--dest ~/.pi/agent/skills` for Pi. It also appends a managed skills table to existing instruction files (`~/.claude/CLAUDE.md`, project `AGENTS.md`, `~/.pi/agent/AGENTS.md`, `GEMINI.md`).
 

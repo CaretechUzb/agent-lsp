@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/blackwell-systems/agent-lsp/internal/config"
+	"github.com/blackwell-systems/agent-lsp/skills"
 )
 
 func TestBuildLspArgs(t *testing.T) {
@@ -272,5 +273,75 @@ func TestRulesTarget(t *testing.T) {
 	}
 	if isPiChoice(9) != true || isPiChoice(10) != true || isPiChoice(1) != false {
 		t.Error("isPiChoice returned unexpected results")
+	}
+}
+
+func TestResolveSkillsDest(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd error: %v", err)
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir error: %v", err)
+	}
+
+	tests := []struct {
+		choice int
+		want   string
+	}{
+		{1, filepath.Join(homeDir, ".claude", "skills")},
+		{2, filepath.Join(homeDir, ".claude", "skills")},
+		{4, filepath.Join(homeDir, ".cursor", "skills")},
+		{7, filepath.Join(homeDir, ".config", "gemini-cli", "skills")},
+		{9, filepath.Join(cwd, ".agents", "skills")},
+		{10, filepath.Join(homeDir, ".pi", "agent", "skills")},
+		{3, ""},
+		{5, ""},
+		{6, ""},
+		{8, ""},
+	}
+	for _, tc := range tests {
+		if got := resolveSkillsDest(tc.choice); got != tc.want {
+			t.Errorf("resolveSkillsDest(%d) = %q, want %q", tc.choice, got, tc.want)
+		}
+	}
+}
+
+func TestSkillsInstall_WritesCompleteTrees(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "skills")
+
+	n, err := skills.Install(dest)
+	if err != nil {
+		t.Fatalf("skills.Install error: %v", err)
+	}
+	if n != 24 {
+		t.Errorf("expected 24 skills installed, got %d", n)
+	}
+
+	// SKILL.md present at the skill root.
+	skillMD := filepath.Join(dest, "lsp-docs", "SKILL.md")
+	data, err := os.ReadFile(skillMD)
+	if err != nil {
+		t.Fatalf("expected %s to exist: %v", skillMD, err)
+	}
+	if !strings.Contains(string(data), "description:") {
+		t.Error("SKILL.md frontmatter missing")
+	}
+
+	// Supporting references files are embedded and written too.
+	ref := filepath.Join(dest, "lsp-explore", "references", "patterns.md")
+	if _, err := os.Stat(ref); err != nil {
+		t.Errorf("expected supporting file %s to exist: %v", ref, err)
+	}
+
+	// Re-run overwrites in place and keeps the same count.
+	n2, err := skills.Install(dest)
+	if err != nil {
+		t.Fatalf("second skills.Install error: %v", err)
+	}
+	if n2 != 24 {
+		t.Errorf("expected 24 skills on re-install, got %d", n2)
 	}
 }
