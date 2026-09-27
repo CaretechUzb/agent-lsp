@@ -273,3 +273,83 @@ func TestCleanManagedSection_RulesSentinels(t *testing.T) {
 		t.Error("surrounding content should be preserved")
 	}
 }
+
+func TestCleanMCPConfig_RemovesEmptyGeneratedConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".mcp.json")
+
+	cfg := map[string]any{
+		"mcpServers": map[string]any{
+			"agent-lsp": map[string]any{"type": "stdio", "command": "agent-lsp"},
+		},
+	}
+	data, _ := json.MarshalIndent(cfg, "", "  ")
+	os.WriteFile(path, data, 0o644)
+
+	removed, _ := cleanMCPConfig(path, false)
+	if removed < 1 {
+		t.Fatalf("expected at least 1 removed item, got %d", removed)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("empty generated config file should have been removed")
+	}
+}
+
+func TestCleanMCPConfig_KeepsFileWithUserServers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".mcp.json")
+
+	cfg := map[string]any{
+		"mcpServers": map[string]any{
+			"agent-lsp": map[string]any{"command": "agent-lsp"},
+			"other":     map[string]any{"command": "other"},
+		},
+	}
+	data, _ := json.MarshalIndent(cfg, "", "  ")
+	os.WriteFile(path, data, 0o644)
+
+	cleanMCPConfig(path, false)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("config file with user servers must be kept")
+	}
+	result, _ := os.ReadFile(path)
+	var parsed map[string]any
+	json.Unmarshal(result, &parsed)
+	servers := parsed["mcpServers"].(map[string]any)
+	if _, ok := servers["other"]; !ok {
+		t.Error("user server entry was lost")
+	}
+	if _, ok := servers["agent-lsp"]; ok {
+		t.Error("agent-lsp entry should have been removed")
+	}
+}
+
+func TestCleanManagedSection_RemovesGeneratedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENTS.md")
+
+	content := "<!-- agent-lsp:rules:start -->\nrules\n<!-- agent-lsp:rules:end -->\n"
+	os.WriteFile(path, []byte(content), 0o644)
+
+	removed, _ := cleanManagedSection(path, false)
+	if removed != 1 {
+		t.Fatalf("expected removed=1, got %d", removed)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("generated rules file with no other content should have been removed")
+	}
+}
+
+func TestCleanMCPConfig_RemovesAlreadyEmptyHusk(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".mcp.json")
+	os.WriteFile(path, []byte("{\n  \"mcpServers\": {}\n}"), 0o644)
+
+	removed, skipped := cleanMCPConfig(path, false)
+	if removed != 1 || skipped != 0 {
+		t.Fatalf("expected (1,0), got (%d,%d)", removed, skipped)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("empty husk config should have been removed")
+	}
+}

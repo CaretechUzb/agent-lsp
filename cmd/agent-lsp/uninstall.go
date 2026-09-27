@@ -117,8 +117,24 @@ func cleanMCPConfig(path string, dryRun bool) (int, int) {
 		}
 	}
 
-	if removedCount == 0 {
+	// A config that holds nothing of user value (an empty mcpServers map
+	// and no other top-level keys) is a husk init likely created: remove it,
+	// whether or not this run removed a key from it.
+	emptyHusk := len(servers) == 0 && len(raw) == 1
+	if removedCount == 0 && !emptyHusk {
 		return 0, 1
+	}
+
+	if emptyHusk {
+		if dryRun {
+			fmt.Printf("[dry-run] Would remove empty config file %s\n", path)
+		} else if err := os.Remove(path); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not remove empty config %s: %v\n", path, err)
+		}
+		if removedCount == 0 {
+			removedCount++
+		}
+		return removedCount, 0
 	}
 
 	if !dryRun {
@@ -216,6 +232,19 @@ func cleanManagedSection(path string, dryRun bool) (int, int) {
 	}
 
 	newContent := content[:startIdx] + content[endIdx:]
+	// If the file holds nothing but the removed section, remove the file
+	// init likely created.
+	if strings.TrimSpace(newContent) == "" {
+		if dryRun {
+			fmt.Printf("[dry-run] Would remove empty rules file %s\n", path)
+			return 1, 0
+		}
+		if err := os.Remove(path); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not remove empty rules file %s: %v\n", path, err)
+			return 0, 1
+		}
+		return 1, 0
+	}
 	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", path, err)
 		return 0, 1
