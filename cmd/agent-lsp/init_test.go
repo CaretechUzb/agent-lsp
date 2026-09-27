@@ -153,3 +153,83 @@ func TestResolveTargetPath_Custom(t *testing.T) {
 		t.Errorf("expected path to end with foo/bar.json, got %q", got)
 	}
 }
+
+func TestResolveTargetPath_Pi(t *testing.T) {
+	project, err := resolveTargetPath(9, "")
+	if err != nil {
+		t.Fatalf("resolveTargetPath(9, \"\") error: %v", err)
+	}
+	if !strings.HasSuffix(project, filepath.Join(".mcp.json")) {
+		t.Errorf("Pi project target: got %q, want suffix .mcp.json", project)
+	}
+
+	global, err := resolveTargetPath(10, "")
+	if err != nil {
+		t.Fatalf("resolveTargetPath(10, \"\") error: %v", err)
+	}
+	want := filepath.Join(".config", "mcp", "mcp.json")
+	if !strings.HasSuffix(global, want) {
+		t.Errorf("Pi global target: got %q, want suffix %q", global, want)
+	}
+}
+
+func TestResolveRulesPath_Pi(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd error: %v", err)
+	}
+
+	project := resolveRulesPath(9)
+	if want := filepath.Join(cwd, "AGENTS.md"); project != want {
+		t.Errorf("Pi project rules: got %q, want %q", project, want)
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir error: %v", err)
+	}
+	global := resolveRulesPath(10)
+	if want := filepath.Join(homeDir, ".pi", "agent", "AGENTS.md"); global != want {
+		t.Errorf("Pi global rules: got %q, want %q", global, want)
+	}
+}
+
+func TestWriteManagedSection_PiRulesSentinels(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENTS.md")
+	if err := os.WriteFile(path, []byte("# Project\n"), 0o644); err != nil {
+		t.Fatalf("could not seed AGENTS.md: %v", err)
+	}
+
+	if err := writeManagedSection(path, "managed-body"); err != nil {
+		t.Fatalf("writeManagedSection error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("could not read AGENTS.md: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, managedSectionStart) || !strings.Contains(text, managedSectionEnd) {
+		t.Error("managed section sentinels not found after write")
+	}
+	if !strings.Contains(text, "managed-body") {
+		t.Error("managed content not found after write")
+	}
+	if !strings.Contains(text, "# Project") {
+		t.Error("existing content was lost")
+	}
+
+	// Second write replaces the section instead of appending a duplicate.
+	if err := writeManagedSection(path, "managed-body-2"); err != nil {
+		t.Fatalf("second writeManagedSection error: %v", err)
+	}
+	data, _ = os.ReadFile(path)
+	text = string(data)
+	if strings.Count(text, managedSectionStart) != 1 {
+		t.Errorf("expected exactly one managed section, found %d", strings.Count(text, managedSectionStart))
+	}
+	if !strings.Contains(text, "managed-body-2") || strings.Contains(text, "managed-body\n") {
+		t.Error("managed section was not replaced on second write")
+	}
+}

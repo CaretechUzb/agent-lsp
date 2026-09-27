@@ -84,15 +84,23 @@ func runInit(args []string) {
 		fmt.Println("  6. Windsurf     (~/.codeium/windsurf/mcp_config.json)")
 		fmt.Println("  7. Gemini CLI   (project .gemini/settings.json in current directory)")
 		fmt.Println("  8. Custom path")
+		fmt.Println("  9. Pi           (project .mcp.json in current directory)")
+		fmt.Println(" 10. Pi           (global ~/.config/mcp/mcp.json)")
 		reader := bufio.NewReader(os.Stdin)
-		fmt.Print("Choice [1-8]: ")
+		fmt.Print("Choice [1-10]: ")
 		line, _ := reader.ReadString('\n')
 		line = strings.TrimSpace(line)
 		n := 0
 		if len(line) == 1 && line[0] >= '1' && line[0] <= '8' {
 			n = int(line[0] - '0')
 		}
-		if n >= 1 && n <= 8 {
+		if line == "9" {
+			n = 9
+		}
+		if line == "10" {
+			n = 10
+		}
+		if n >= 1 && n <= 10 {
 			choice = n
 		}
 		if choice == 8 {
@@ -141,6 +149,7 @@ func runInit(args []string) {
 	}
 
 	// Step 9: Print result and next step.
+	isPi := choice == 9 || choice == 10
 	data, err := os.ReadFile(targetPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading written config: %v\n", err)
@@ -149,6 +158,10 @@ func runInit(args []string) {
 	fmt.Printf("Wrote MCP config to: %s\n\n", targetPath)
 	fmt.Println("Config written:")
 	fmt.Println(string(data))
+	if isPi {
+		fmt.Println("Pi loads MCP servers through the pi-mcp-adapter package.")
+		fmt.Println("If it is not installed yet, run: pi install npm:pi-mcp-adapter")
+	}
 	fmt.Println("Next: restart your AI tool to pick up the new MCP server.")
 }
 
@@ -185,6 +198,10 @@ func resolveTargetPath(choice int, customPath string) (string, error) {
 		return filepath.Join(homeDir, ".codeium", "windsurf", "mcp_config.json"), nil
 	case 7:
 		return filepath.Join(cwd, ".gemini", "settings.json"), nil
+	case 9:
+		return filepath.Join(cwd, ".mcp.json"), nil
+	case 10:
+		return filepath.Join(homeDir, ".config", "mcp", "mcp.json"), nil
 	case 8:
 		if strings.HasPrefix(customPath, "~/") {
 			customPath = homeDir + "/" + customPath[2:]
@@ -283,6 +300,12 @@ func resolveRulesPath(choice int) string {
 		return filepath.Join(homeDir, ".windsurfrules")
 	case 7:
 		return filepath.Join(cwd, "GEMINI.md")
+	case 9:
+		// Pi project context file: AGENTS.md (CLAUDE.md is the fallback Pi accepts).
+		return filepath.Join(cwd, "AGENTS.md")
+	case 10:
+		// Pi user instructions: agent-directory AGENTS.md.
+		return filepath.Join(homeDir, ".pi", "agent", "AGENTS.md")
 	default:
 		return ""
 	}
