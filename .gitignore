@@ -49,3 +49,5 @@ agent-lsp.exe
 assets/downloads-badge.json
 assets/download-stats.svg
 assets/download-stats.cache
+# Local Pi runtime state
+.atl/
