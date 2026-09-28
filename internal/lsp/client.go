@@ -25,6 +25,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -73,6 +74,12 @@ var requestTimeouts = map[string]time.Duration{
 	"textDocument/documentHighlight":    10 * time.Second,
 	"textDocument/semanticTokens/range": 30 * time.Second,
 	"textDocument/semanticTokens/full":  30 * time.Second,
+	// Pull diagnostics get a deliberately short timeout: at least one server's
+	// textDocument/diagnostic implementation currently hangs and can wedge the
+	// server process itself (davalillo/mql-language-server#91), so the client
+	// bounds the blast radius and treats a timeout as "no pull results". The
+	// caller must never retry in a loop. (issue #43)
+	"textDocument/diagnostic": 10 * time.Second,
 }
 
 const defaultTimeout = 30 * time.Second
@@ -1444,6 +1451,66 @@ func (c *LSPClient) GetAllDiagnostics() map[string][]types.LSPDiagnostic {
 	return out
 }
 
+// ErrPullDiagnosticsUnsupported is returned by PullDiagnostics when the server
+// did not declare the LSP 3.17 diagnosticProvider capability. Callers can test
+// for it with errors.Is to distinguish "this server has no pull model" from a
+// genuine request failure such as a timeout. (issue #43)
+var ErrPullDiagnosticsUnsupported = errors.New("server does not support pull diagnostics (diagnosticProvider)")
+
+// documentDiagnosticReport is the subset of the LSP 3.17
+// DocumentDiagnosticReport that PullDiagnostics consumes: a "full" report
+// carries items, an "unchanged" report carries none.
+type documentDiagnosticReport struct {
+	Kind  string                `json:"kind"`
+	Items []types.LSPDiagnostic `json:"items"`
+}
+
+// PullDiagnostics issues a single LSP 3.17 textDocument/diagnostic request for
+// uri and returns the reported diagnostics. It is the pull-model counterpart to
+// the textDocument/publishDiagnostics push channel: pull-model servers (for
+// example OmniSharp/C# servers and mql-lsp-server) never push, so this is the
+// only way to obtain their diagnostics.
+//
+// The method issues at most one request and never retries. At least one known
+// server's pull implementation currently hangs and wedges the server itself
+// (davalillo/mql-language-server#91), so a timeout is treated as "no pull
+// results": the caller must not retry in a loop. The request is bounded by the
+// "textDocument/diagnostic" entry in requestTimeouts (10s) as well as ctx.
+//
+// When the server did not declare diagnosticProvider it returns
+// ErrPullDiagnosticsUnsupported without sending a request. A null result, an
+// "unchanged" report, or any unrecognized report kind yields no diagnostics and
+// no error. (issue #43)
+func (c *LSPClient) PullDiagnostics(ctx context.Context, uri string) ([]types.LSPDiagnostic, error) {
+	if !c.hasCapability("diagnosticProvider") {
+		return nil, ErrPullDiagnosticsUnsupported
+	}
+	result, err := c.sendRequest(ctx, "textDocument/diagnostic", map[string]any{
+		"textDocument": map[string]any{"uri": NormalizeFileURI(uri)},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result == nil || string(result) == "null" {
+		return []types.LSPDiagnostic{}, nil
+	}
+	var report documentDiagnosticReport
+	if err := json.Unmarshal(result, &report); err != nil {
+		return nil, err
+	}
+	if report.Kind != "full" {
+		// "unchanged" (or an unknown kind) carries nothing to extract. This is
+		// not an error: the server is telling us its cached result still holds.
+		return []types.LSPDiagnostic{}, nil
+	}
+	if report.Items == nil {
+		return []types.LSPDiagnostic{}, nil
+	}
+	out := make([]types.LSPDiagnostic, len(report.Items))
+	copy(out, report.Items)
+	return out, nil
+}
+
 // SubscribeToDiagnostics registers cb to be called on every publishDiagnostics notification.
 // It immediately fires cb for every URI already in the diagnostics cache so that
 // new subscribers do not miss diagnostics published before they registered.
@@ -2441,6 +2508,7 @@ var lspMethodToCapability = map[string]string{
 	"textDocument/codeLens":          "codeLensProvider",
 	"textDocument/documentHighlight": "documentHighlightProvider",
 	"textDocument/declaration":       "declarationProvider",
+	"textDocument/diagnostic":        "diagnosticProvider",
 	"textDocument/semanticTokens":    "semanticTokensProvider",
 	"textDocument/inlayHint":         "inlayHintProvider",
 	"callHierarchy/incomingCalls":    "callHierarchyProvider",
@@ -2465,6 +2533,17 @@ func (c *LSPClient) hasCapability(key string) bool {
 		return b
 	}
 	return v != nil
+}
+
+// SupportsPullDiagnostics reports whether the server declared the LSP 3.17
+// pull-diagnostics capability (diagnosticProvider), either statically in its
+// initialize result or through a dynamic client/registerCapability
+// notification. Servers in the pull model (for example OmniSharp/C# servers
+// and mql-lsp-server) never send textDocument/publishDiagnostics, so this
+// capability is the signal that textDocument/diagnostic can be used instead.
+// (issue #43)
+func (c *LSPClient) SupportsPullDiagnostics() bool {
+	return c.hasCapability("diagnosticProvider")
 }
 
 func (c *LSPClient) getCapabilityRaw(key string) any {

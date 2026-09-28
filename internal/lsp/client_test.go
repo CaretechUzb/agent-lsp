@@ -3,6 +3,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -573,6 +574,199 @@ func TestLanguageIDFromURI(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("languageIDFromURI(%q) = %q, want %q", tt.uri, got, tt.want)
 		}
+	}
+}
+
+// TestPullDiagnostics_FullReport verifies that PullDiagnostics issues a
+// textDocument/diagnostic request and extracts the items from a "full" report.
+// (issue #43)
+func TestPullDiagnostics_FullReport(t *testing.T) {
+	c, serverW, clientR := newTestClient(t)
+
+	// A server-declared diagnosticProvider is an object, not a bool; the
+	// capability check must accept both shapes.
+	c.capsMu.Lock()
+	c.capabilities["diagnosticProvider"] = map[string]any{"identifier": "test"}
+	c.capsMu.Unlock()
+
+	type reply struct {
+		diags []types.LSPDiagnostic
+		err   error
+	}
+	done := make(chan reply, 1)
+	go func() {
+		diags, err := c.PullDiagnostics(context.Background(), "file:///x.go")
+		done <- reply{diags, err}
+	}()
+
+	req := readNextMsg(t, clientR)
+	if req == nil {
+		t.Fatal("expected diagnostic request")
+	}
+	if req["method"] != "textDocument/diagnostic" {
+		t.Errorf("expected textDocument/diagnostic, got %v", req["method"])
+	}
+	params, _ := req["params"].(map[string]any)
+	td, _ := params["textDocument"].(map[string]any)
+	if td["uri"] != "file:///x.go" {
+		t.Errorf("expected textDocument.uri in params, got %v", params)
+	}
+
+	if err := writeMsg(serverW, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      req["id"],
+		"result": map[string]any{
+			"kind": "full",
+			"items": []any{
+				map[string]any{
+					"range":    map[string]any{"start": map[string]any{"line": 0, "character": 0}, "end": map[string]any{"line": 0, "character": 1}},
+					"severity": 1,
+					"message":  "boom",
+				},
+				map[string]any{
+					"range":    map[string]any{"start": map[string]any{"line": 1, "character": 0}, "end": map[string]any{"line": 1, "character": 1}},
+					"severity": 2,
+					"message":  "warn",
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("write response: %v", err)
+	}
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("PullDiagnostics error: %v", r.err)
+		}
+		if len(r.diags) != 2 {
+			t.Fatalf("expected 2 diagnostics, got %d: %+v", len(r.diags), r.diags)
+		}
+		if r.diags[0].Message != "boom" || r.diags[1].Message != "warn" {
+			t.Errorf("unexpected diagnostics: %+v", r.diags)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for PullDiagnostics")
+	}
+}
+
+// TestPullDiagnostics_UnchangedReport verifies that an "unchanged" report yields
+// no diagnostics and no error: there is nothing to extract. (issue #43)
+func TestPullDiagnostics_UnchangedReport(t *testing.T) {
+	c, serverW, clientR := newTestClient(t)
+	c.capsMu.Lock()
+	c.capabilities["diagnosticProvider"] = true
+	c.capsMu.Unlock()
+
+	type reply struct {
+		diags []types.LSPDiagnostic
+		err   error
+	}
+	done := make(chan reply, 1)
+	go func() {
+		diags, err := c.PullDiagnostics(context.Background(), "file:///x.go")
+		done <- reply{diags, err}
+	}()
+
+	req := readNextMsg(t, clientR)
+	if req == nil {
+		t.Fatal("expected diagnostic request")
+	}
+	if err := writeMsg(serverW, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      req["id"],
+		"result":  map[string]any{"kind": "unchanged"},
+	}); err != nil {
+		t.Fatalf("write response: %v", err)
+	}
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("expected no error for unchanged report, got: %v", r.err)
+		}
+		if len(r.diags) != 0 {
+			t.Errorf("expected no diagnostics for unchanged report, got %+v", r.diags)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for PullDiagnostics")
+	}
+}
+
+// TestPullDiagnostics_UnsupportedDoesNotSend verifies that a server without the
+// diagnosticProvider capability returns the sentinel error without sending a
+// request at all. (issue #43)
+func TestPullDiagnostics_UnsupportedDoesNotSend(t *testing.T) {
+	c, _, clientR := newTestClient(t)
+
+	_, err := c.PullDiagnostics(context.Background(), "file:///x.go")
+	if !errors.Is(err, ErrPullDiagnosticsUnsupported) {
+		t.Fatalf("expected ErrPullDiagnosticsUnsupported, got %v", err)
+	}
+
+	c.pendingMu.Lock()
+	pending := len(c.pending)
+	c.pendingMu.Unlock()
+	if pending != 0 {
+		t.Errorf("expected no pending request, got %d", pending)
+	}
+
+	// Confirm nothing was written to the server as well.
+	sent := make(chan struct{})
+	go func() {
+		fr := NewFrameReader(clientR)
+		if _, rerr := fr.ReadMessage(); rerr == nil {
+			close(sent)
+		}
+	}()
+	select {
+	case <-sent:
+		t.Error("expected no textDocument/diagnostic request when unsupported")
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+// TestPullDiagnostics_ContextDeadline verifies that a hanging server does not
+// block the client: the caller's context deadline bounds the request, the
+// pending entry is cleaned up, and the error is the context error. A pull must
+// never wedge the session. (issue #43)
+func TestPullDiagnostics_ContextDeadline(t *testing.T) {
+	c, _, clientR := newTestClient(t)
+	c.capsMu.Lock()
+	c.capabilities["diagnosticProvider"] = true
+	c.capsMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := c.PullDiagnostics(ctx, "file:///hang.go")
+		errCh <- err
+	}()
+
+	// Consume the outgoing request so the synchronous pipe write does not block,
+	// then deliberately never answer it.
+	if req := readNextMsg(t, clientR); req == nil {
+		t.Fatal("expected diagnostic request")
+	}
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("PullDiagnostics did not honor the caller context deadline")
+	}
+
+	// A timed-out pull must not poison the session: the pending entry is removed
+	// so a later response (or request) is not misrouted.
+	c.pendingMu.Lock()
+	pending := len(c.pending)
+	c.pendingMu.Unlock()
+	if pending != 0 {
+		t.Errorf("expected pending requests to be cleaned up after timeout, got %d", pending)
 	}
 }
 

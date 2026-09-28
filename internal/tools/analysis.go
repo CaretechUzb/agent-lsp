@@ -8,6 +8,13 @@
 // state rather than stale LSP cache. It waits up to 25 seconds for
 // diagnostics to settle (cross-package analysis in Go can be slow).
 //
+// Push is tried first: any document that delivered a
+// textDocument/publishDiagnostics notification is used as-is. For a document
+// whose push channel is dead, get_diagnostics issues one LSP 3.17
+// textDocument/diagnostic request when the server declared diagnosticProvider
+// (a bounded, non-retrying pull), so pull-model servers that never push can
+// still report diagnostics. (issue #43)
+//
 // suggest_fixes filters the returned actions to a concise summary:
 // title, kind, and whether a command or workspace edit is attached.
 // Full workspace edits are not inlined to keep responses compact.
@@ -18,8 +25,10 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
-	gcf "github.com/blackwell-systems/agent-lsp/internal/encoding/gcf"
+	"github.com/blackwell-systems/agent-lsp/internal/encoding/gcf"
+	"github.com/blackwell-systems/agent-lsp/internal/logging"
 	"github.com/blackwell-systems/agent-lsp/internal/lsp"
 	"github.com/blackwell-systems/agent-lsp/internal/types"
 	gcfgo "github.com/blackwell-systems/gcf-go"
@@ -79,6 +88,13 @@ func HandleGetDiagnostics(ctx context.Context, client *lsp.LSPClient, args map[s
 		queriedURIs = openURIs
 	}
 
+	// Push-first: a document that already received a publishDiagnostics
+	// notification is never pulled. For a document whose push channel is dead,
+	// issue one textDocument/diagnostic request when the server declared
+	// diagnosticProvider, and merge the result into diagMap. (issue #43)
+	hasProvider := client.SupportsPullDiagnostics()
+	pulledLive := pullDiagnosticsForDeadChannels(ctx, client, diagMap, queriedURIs, hasProvider)
+
 	hasErrors := false
 	for _, diags := range diagMap {
 		if len(diags) > 0 {
@@ -87,33 +103,42 @@ func HandleGetDiagnostics(ctx context.Context, client *lsp.LSPClient, args map[s
 		}
 	}
 
+	deadURIs, liveCount := classifyDiagnosticsChannel(client, queriedURIs, pulledLive)
+	// A pull was attempted for the dead documents only when the server declares
+	// the capability; if any documents remain dead after that attempt the pull
+	// did not respond, and the hint must say so rather than implying no pull was
+	// tried.
+	pullAttempted := hasProvider && len(deadURIs) > 0
+
 	// group_by=symbol: group diagnostics under their owning symbol.
 	groupBy, _ := args["group_by"].(string)
 	if groupBy == "symbol" && filePath != "" {
 		result, gErr := groupDiagnosticsBySymbol(ctx, client, filePath, diagMap)
 		if gErr == nil {
-			deadURIs, liveCount := classifyDiagnosticsChannel(client, queriedURIs)
 			encoded, _ := EncodeResult(ctx, result)
-			return appendHint(encoded, diagnosticsHint(hasErrors, deadURIs, liveCount)), nil
+			return appendHint(encoded, diagnosticsHint(hasErrors, deadURIs, liveCount, pullAttempted)), nil
 		}
 		// Fall through to ungrouped if symbol grouping fails.
 	}
 
-	deadURIs, liveCount := classifyDiagnosticsChannel(client, queriedURIs)
 	encoded, _ := EncodeResult(ctx, diagMap)
-	return appendHint(encoded, diagnosticsHint(hasErrors, deadURIs, liveCount)), nil
+	return appendHint(encoded, diagnosticsHint(hasErrors, deadURIs, liveCount, pullAttempted)), nil
 }
 
 // diagnosticsHint builds the next-step hint for a get_diagnostics result.
 //
 // An empty result is ambiguous: the server may have analyzed the document and
-// found nothing (a live, empty publish channel), or it may never have published
-// anything at all (agent-lsp implements neither the LSP 3.17 pull model nor any
-// push fallback). The hint must not claim the file is clean in the second case.
-// deadURIs lists queried documents that have never received a
-// textDocument/publishDiagnostics notification; liveCount is how many queried
-// documents have (a published empty array counts as live). (issue #44)
-func diagnosticsHint(hasErrors bool, deadURIs []string, liveCount int) string {
+// found nothing (a live, empty publish channel), it may have answered a pull
+// request successfully (also verified), or its diagnostics channel may be dead
+// (no push ever, and no successful pull). The hint must not claim the file is
+// clean in the last case. deadURIs lists queried documents that are not
+// verified by either a textDocument/publishDiagnostics notification or a
+// successful pull; liveCount is how many queried documents are verified (a
+// published empty array counts as live). pullAttempted is true when the server
+// declared diagnosticProvider and a pull was attempted for the dead documents
+// but did not respond, so the wording can distinguish "this server has no pull
+// model" from "the pull did not answer". (issues #43, #44)
+func diagnosticsHint(hasErrors bool, deadURIs []string, liveCount int, pullAttempted bool) string {
 	const (
 		fixesHint = "Use suggest_fixes at each error location for quick fixes."
 		safeHint  = "No errors. Safe to proceed."
@@ -122,30 +147,89 @@ func diagnosticsHint(hasErrors bool, deadURIs []string, liveCount int) string {
 		return fixesHint
 	}
 	if len(deadURIs) == 0 {
-		// Every queried document has a live channel (or nothing was queried).
+		// Every queried document is verified by a push or a successful pull
+		// (or nothing was queried).
 		return safeHint
 	}
 	sorted := append([]string(nil), deadURIs...)
 	sort.Strings(sorted)
 	if liveCount == 0 {
+		if pullAttempted {
+			return "No diagnostics received — the server publishes none and its pull diagnostics did not respond; this does not confirm the file is clean."
+		}
 		return "No diagnostics received — the server has not published any for this document; this does not confirm the file is clean."
+	}
+	if pullAttempted {
+		return safeHint + " No diagnostics received for: " + strings.Join(sorted, ", ") + " — the server publishes none and its pull diagnostics did not respond; those files are not confirmed clean."
 	}
 	return safeHint + " No diagnostics received for: " + strings.Join(sorted, ", ") + " — those files are not confirmed clean."
 }
 
-// classifyDiagnosticsChannel splits queried URIs into those that never received
-// a publishDiagnostics notification (dead) and a count of those that did (live,
-// including a published empty array). A dead channel makes an empty result
-// unverifiable. (issue #44)
-func classifyDiagnosticsChannel(client *lsp.LSPClient, uris []string) (deadURIs []string, liveCount int) {
+// classifyDiagnosticsChannel splits queried URIs into those that are not
+// verified by any diagnostics channel (dead) and a count of those that are
+// (live). A URI is verified when it received a publishDiagnostics notification
+// (including a published empty array) or when a pull request answered
+// successfully (pullLive). A dead channel makes an empty result unverifiable.
+// (issues #43, #44)
+func classifyDiagnosticsChannel(client *lsp.LSPClient, uris []string, pullLive map[string]bool) (deadURIs []string, liveCount int) {
 	for _, uri := range uris {
-		if client.HasPublishedDiagnostics(uri) {
+		if client.HasPublishedDiagnostics(uri) || pullLive[uri] {
 			liveCount++
 		} else {
 			deadURIs = append(deadURIs, uri)
 		}
 	}
 	return deadURIs, liveCount
+}
+
+// shouldAttemptPull reports whether get_diagnostics should issue a
+// textDocument/diagnostic request for one document. Pull is attempted only
+// when the server declared diagnosticProvider and the push channel for that
+// document is dead: push-first means a document that already received a
+// publishDiagnostics notification is never pulled. (issue #43)
+func shouldAttemptPull(hasProvider, pushLive bool) bool {
+	return hasProvider && !pushLive
+}
+
+// pullDiagnosticsForDeadChannels attempts a single textDocument/diagnostic
+// request for each queried document whose push channel is dead, when the server
+// declares diagnosticProvider. A successful pull replaces the (empty or absent)
+// cached push entry in diagMap and is recorded in the returned set of
+// pull-verified URIs. A pull that errors or times out leaves the channel dead;
+// it is never retried and never run for a document that already received a
+// push. (issue #43)
+//
+// pullBudget bounds the aggregate time spent pulling across documents: once
+// exceeded, remaining dead documents are skipped for this query (left dead;
+// the next query can pull them). Without it, an all-documents query against a
+// server whose pull method hangs (davalillo/mql-language-server#91) with N
+// open dead documents would block for N x 10s. (issue #43)
+const pullTimeBudget = 15 * time.Second
+
+func pullDiagnosticsForDeadChannels(ctx context.Context, client *lsp.LSPClient, diagMap map[string][]types.LSPDiagnostic, queriedURIs []string, hasProvider bool) map[string]bool {
+	pulledLive := make(map[string]bool)
+	if !hasProvider {
+		return pulledLive
+	}
+	start := time.Now()
+	for _, uri := range queriedURIs {
+		if !shouldAttemptPull(hasProvider, client.HasPublishedDiagnostics(uri)) {
+			continue
+		}
+		if elapsed := time.Since(start); elapsed >= pullTimeBudget {
+			logging.Log(logging.LevelInfo, fmt.Sprintf("pull diagnostics: aggregate budget %s exhausted after %s; skipping remaining dead documents", pullTimeBudget, elapsed.Round(time.Millisecond)))
+			break
+		}
+		pulled, err := client.PullDiagnostics(ctx, uri)
+		if err != nil {
+			// Timeout or protocol error: leave the channel dead. The caller
+			// never retries, so the server is not re-queried this turn.
+			continue
+		}
+		diagMap[uri] = pulled
+		pulledLive[uri] = true
+	}
+	return pulledLive
 }
 
 // symbolDiagGroup groups diagnostics under a named symbol.
