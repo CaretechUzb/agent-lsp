@@ -35,7 +35,6 @@ var capabilityToolMap = []capabilityToolEntry{
 	{"callHierarchyProvider", []string{"find_callers"}},
 	{"typeHierarchyProvider", []string{"type_hierarchy"}},
 	{"inlayHintProvider", []string{"get_inlay_hints"}},
-	{"diagnosticProvider", []string{"get_diagnostics"}},
 }
 
 // alwaysAvailableTools are tools that do not require a server capability —
@@ -50,6 +49,9 @@ var alwaysAvailableTools = []string{
 	"execute_command",
 	"set_log_level",
 	"detect_lsp_servers",
+	// Served from pushed textDocument/publishDiagnostics, which needs no server
+	// capability; diagnosticProvider is the separate pull model.
+	"get_diagnostics",
 }
 
 // SkillStatus describes whether a skill is viable with the current language server.

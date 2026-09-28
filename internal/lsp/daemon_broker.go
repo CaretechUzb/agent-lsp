@@ -99,6 +99,10 @@ func RunBroker(cfg BrokerConfig) error {
 	}
 	logging.Log(logging.LevelInfo, "daemon: client.Initialize returned ok")
 
+	// Forward server-pushed diagnostics to socket clients; see diagFanout.
+	fanout := newDiagFanout()
+	client.SubscribeToDiagnostics(fanout.publish)
+
 	// Listen on Unix socket BEFORE publishing daemon.json so the
 	// registry is only visible once we can actually be connected to.
 	logging.Log(logging.LevelInfo, fmt.Sprintf("daemon: net.Listen unix socket=%q", socketPath))
@@ -197,7 +201,14 @@ func RunBroker(cfg BrokerConfig) error {
 						logging.Log(logging.LevelWarning, fmt.Sprintf("daemon: panic in broker connection handler: %v", r))
 					}
 				}()
-				handleBrokerConnection(ctx, c, client)
+				bc := newBrokerConn(c)
+				// Register before snapshotting so no live update falls between.
+				fanout.add(bc)
+				go bc.writeLoop()
+				bc.replay(client.GetAllDiagnostics())
+				handleBrokerConnection(ctx, bc, client)
+				fanout.remove(bc)
+				bc.close()
 				connMu.Lock()
 				delete(connections, c)
 				connCount.Add(-1)
@@ -234,10 +245,10 @@ func RunBroker(cfg BrokerConfig) error {
 // language server. The connection uses Content-Length framing (same as LSP stdio).
 // ctx is the broker's lifecycle context; forwarded requests are cancelled when
 // the broker shuts down.
-func handleBrokerConnection(ctx context.Context, conn net.Conn, client *LSPClient) {
-	defer conn.Close()
+func handleBrokerConnection(ctx context.Context, bc *brokerConn, client *LSPClient) {
+	defer bc.conn.Close()
 
-	reader := bufio.NewReader(conn)
+	reader := bufio.NewReader(bc.conn)
 
 	for {
 		// Read a Content-Length framed message from the client.
@@ -284,7 +295,7 @@ func handleBrokerConnection(ctx context.Context, conn net.Conn, client *LSPClien
 					"result":  result,
 				})
 			}
-			if err := writeFramedMessage(conn, response); err != nil {
+			if err := bc.write(response); err != nil {
 				logging.Log(logging.LevelDebug, fmt.Sprintf("broker: failed to write response: %v", err))
 				return
 			}

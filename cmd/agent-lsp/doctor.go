@@ -38,7 +38,6 @@ var doctorCapabilityMap = []doctorCapabilityEntry{
 	{"callHierarchyProvider", []string{"find_callers"}},
 	{"typeHierarchyProvider", []string{"type_hierarchy"}},
 	{"inlayHintProvider", []string{"get_inlay_hints"}},
-	{"diagnosticProvider", []string{"get_diagnostics"}},
 }
 
 // alwaysAvailableDoctorTools are tools that do not require a server capability.

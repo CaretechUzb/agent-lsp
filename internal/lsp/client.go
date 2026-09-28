@@ -1414,6 +1414,15 @@ func (c *LSPClient) GetDiagnostics(uri string) []types.LSPDiagnostic {
 	return out
 }
 
+// HasDiagnostics reports whether the cache holds an entry for uri (possibly
+// an empty one), i.e. whether SubscribeToDiagnostics would replay it.
+func (c *LSPClient) HasDiagnostics(uri string) bool {
+	c.diagMu.RLock()
+	defer c.diagMu.RUnlock()
+	_, ok := c.diags[NormalizeFileURI(uri)]
+	return ok
+}
+
 // GetAllDiagnostics returns a copy of all diagnostics.
 func (c *LSPClient) GetAllDiagnostics() map[string][]types.LSPDiagnostic {
 	c.diagMu.RLock()

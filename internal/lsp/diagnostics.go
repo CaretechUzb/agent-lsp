@@ -2,16 +2,44 @@ package lsp
 
 import (
 	"context"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/blackwell-systems/agent-lsp/internal/types"
 )
 
+// Tunables for WaitForDiagnostics, read from the environment so a server with
+// slower or quieter publishing can be accommodated without a rebuild.
+//
+//   - AGENT_LSP_DIAG_QUIET_MS: quiet window that must follow the last fresh
+//     notification before diagnostics count as settled (default 500). Raise it
+//     for servers that publish an empty set first and the real one later
+//     (OdooLS: ~1s apart).
+//   - AGENT_LSP_DIAG_CACHED_SETTLE_MS: when a URI already has cached
+//     diagnostics and no fresh notification arrives within this window, accept
+//     the cache (default 0 = disabled, wait until timeout). For servers that do
+//     not republish when a document is reopened with unchanged content.
+var (
+	diagQuietWindow  = envMillis("AGENT_LSP_DIAG_QUIET_MS", 500*time.Millisecond)
+	diagCachedSettle = envMillis("AGENT_LSP_DIAG_CACHED_SETTLE_MS", 0)
+)
+
+func envMillis(name string, def time.Duration) time.Duration {
+	v, err := strconv.Atoi(os.Getenv(name))
+	if err != nil || v < 0 {
+		return def
+	}
+	return time.Duration(v) * time.Millisecond
+}
+
 // WaitForDiagnostics waits for diagnostic stabilisation for all uris.
-// It skips the initial cached-replay notification per URI (matching the
-// TypeScript sawInitialSnapshot logic), requires one fresh notification
-// per URI after that, then waits for a 500ms quiet window.
+// It skips the cached-replay notification for URIs that already had cached
+// diagnostics (matching the TypeScript sawInitialSnapshot logic), requires one
+// fresh notification per URI after that, then waits for a quiet window
+// (AGENT_LSP_DIAG_QUIET_MS). A cached URI with no fresh notification counts as
+// settled after AGENT_LSP_DIAG_CACHED_SETTLE_MS, when that is set.
 // Resolves on timeout without error.
 func WaitForDiagnostics(ctx context.Context, client *LSPClient, uris []string, timeoutMs int) error {
 	if len(uris) == 0 {
@@ -26,16 +54,25 @@ func WaitForDiagnostics(ctx context.Context, client *LSPClient, uris []string, t
 		received[uri] = false
 	}
 
-	// seenInitial tracks whether the initial cached-replay notification has
-	// been skipped per URI, matching the TypeScript sawInitialSnapshot logic.
-	seenInitial := make(map[string]bool, len(uris))
+	// pendingReplay holds URIs whose first callback will be the cached replay
+	// from SubscribeToDiagnostics. Only those get a callback skipped: a URI
+	// with nothing cached gets no replay, so its first callback is fresh.
+	pendingReplay := make(map[string]bool, len(uris))
+	cached := make(map[string]bool, len(uris))
+	for _, uri := range uris {
+		if client.HasDiagnostics(uri) {
+			pendingReplay[uri] = true
+			cached[uri] = true
+		}
+	}
 
-	var lastEvent time.Time
-	lastEvent = time.Now()
+	start := time.Now()
+	lastEvent := start
 
 	allReceived := func() bool {
-		for _, ok := range received {
-			if !ok {
+		cachedSettled := diagCachedSettle > 0 && time.Since(start) >= diagCachedSettle
+		for uri, ok := range received {
+			if !ok && !(cachedSettled && cached[uri]) {
 				return false
 			}
 		}
@@ -47,10 +84,8 @@ func WaitForDiagnostics(ctx context.Context, client *LSPClient, uris []string, t
 	cb := types.DiagnosticUpdateCallback(func(uri string, _ []types.LSPDiagnostic) {
 		mu.Lock()
 		if _, tracked := received[uri]; tracked {
-			if !seenInitial[uri] {
-				// Skip the first callback per URI: it is the cached-replay
-				// snapshot from SubscribeToDiagnostics, not a fresh notification.
-				seenInitial[uri] = true
+			if pendingReplay[uri] {
+				delete(pendingReplay, uri)
 				mu.Unlock()
 				return
 			}
@@ -68,7 +103,7 @@ func WaitForDiagnostics(ctx context.Context, client *LSPClient, uris []string, t
 	defer client.UnsubscribeFromDiagnostics(cb)
 
 	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
-	quietWindow := 500 * time.Millisecond
+	quietWindow := diagQuietWindow
 
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
