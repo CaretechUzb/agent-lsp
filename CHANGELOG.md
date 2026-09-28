@@ -3,6 +3,11 @@
 All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog, Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **`find_references` / `go_to_definition` fuzzy fallback now validates the hover symbol and marks fallback results** ([#39](https://github.com/blackwell-systems/agent-lsp/issues/39)): when a direct position lookup returned nothing, the fuzzy fallback hovered at the cursor, extracted a symbol name from the hover, and re-queried workspace symbols for it. Some servers (observed with mql-lsp-server v2.4.2) answer a hover at an unresolvable call site with the *containing* symbol, so the fallback resolved the wrong symbol and returned the containing function's body as "the definition" of the called function — a confidently wrong answer with no provenance marker. The fallback now compares the hover symbol against the identifier at the queried position and skips when they differ, and any result it does produce carries the provenance hint "Result produced via fuzzy position fallback — verify the symbol identity before use." so agents can weigh it accordingly.
+
 ## [0.20.0] - 2026-09-26
 
 ### Added
