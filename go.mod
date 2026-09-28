@@ -7,6 +7,7 @@ go 1.26.1
 
 require (
 	github.com/blackwell-systems/gcf-go v1.7.1
+	github.com/ebitengine/purego v0.11.1
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/google/jsonschema-go v0.4.2
 	github.com/modelcontextprotocol/go-sdk v1.4.1

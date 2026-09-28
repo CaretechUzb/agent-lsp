@@ -176,3 +176,41 @@ func TestWatcherDisabled(t *testing.T) {
 		}
 	}
 }
+
+func TestWatchPathExcluded(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator), "ws")
+	cases := map[string]bool{
+		filepath.Join(root, "a.py"):                                         false,
+		filepath.Join(root, "src", "a.py"):                                  false,
+		filepath.Join(root, "node_modules", "x", "a.js"):                    true,
+		filepath.Join(root, "src", "__pycache__", "a"):                      true,
+		filepath.Join(root, ".git", "HEAD"):                                 true,
+		filepath.Join(root, "node_modules"):                                 false, // the dir itself; its own event is harmless
+		root:                                                                false,
+		filepath.Join(string(filepath.Separator), "elsewhere", ".git", "x"): false,
+	}
+	for path, want := range cases {
+		if got := watchPathExcluded(root, path); got != want {
+			t.Errorf("watchPathExcluded(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
+// TestKqueueWatcher_RootsShareBudget checks that a second root added through
+// AddTree (addWatcherRoot) is charged to the same entry budget as the first.
+func TestKqueueWatcher_RootsShareBudget(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	mkDirWithFiles(t, a, 5)
+	mkDirWithFiles(t, b, 5)
+	fw, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := &kqueueWatcher{w: fw, lim: watcherLimits{maxDirEntries: 100, maxEntries: 7}}
+	defer k.Close()
+	k.AddTree(a)
+	k.AddTree(b)
+	if len(fw.WatchList()) != 1 {
+		t.Errorf("second root should exceed the shared budget; watch list: %v", fw.WatchList())
+	}
+}

@@ -121,6 +121,14 @@ func (m *ServerManager) StartAll(ctx context.Context, rootDir string) error {
 			}
 			continue
 		}
+		// Repeated start_lsp: stop the previous server first, or its process,
+		// pipes and auto-watcher leak with every call.
+		if e.client != nil {
+			if shutErr := e.client.Shutdown(ctx); shutErr != nil {
+				logging.Log(logging.LevelDebug, fmt.Sprintf("StartAll: shutdown previous %s: %v", e.command[0], shutErr))
+			}
+			e.client = nil
+		}
 		client := NewLSPClient(e.command[0], e.command[1:])
 		logging.Log(logging.LevelDebug, fmt.Sprintf("ServerManager.StartAll: starting %s", e.command[0]))
 		if err := client.Initialize(ctx, rootDir); err != nil {
