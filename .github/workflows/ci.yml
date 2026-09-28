@@ -40,6 +40,31 @@ jobs:
       - name: Binary smoke tests
         run: GOWORK=off go test -run TestBinary ./...
 
+  # The macOS auto-watcher (FSEvents via purego) only builds on darwin, and the
+  # release ships it with CGO_ENABLED=0, where FSEvents callbacks run through
+  # purego's fakecgo. Test that exact configuration under the race detector.
+  unit-macos-nocgo:
+    runs-on: macos-latest
+    env:
+      GOWORK: "off"
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Watcher and lifecycle tests (race)
+        run: go test -race -count=1 -run 'Watch|FSEvents|FileWatcher|Kqueue|StartAll|Shutdown|Broker|Fanout|Diagnostics' ./internal/lsp/
+
+      - name: Unit tests
+        run: go test ./internal/... ./cmd/...
+
   # Core languages: Go, TypeScript, Python, Rust, Kotlin
   multi-lang-core:
     runs-on: ubuntu-latest

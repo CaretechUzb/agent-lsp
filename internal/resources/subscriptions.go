@@ -15,6 +15,9 @@ type NotifyFunc func(uri string)
 // SubscriptionContext holds state for an active resource subscription.
 type SubscriptionContext struct {
 	Callback types.DiagnosticUpdateCallback
+	// unsubscribe removes exactly this subscription; every per-URI callback
+	// shares one code pointer, so removing by Callback would drop them all.
+	unsubscribe func()
 }
 
 // HandleSubscribeDiagnostics sets up a diagnostic subscription.
@@ -37,8 +40,7 @@ func HandleSubscribeDiagnostics(
 				notify(updatedURI)
 			}
 		})
-		client.SubscribeToDiagnostics(cb)
-		return &SubscriptionContext{Callback: cb}, nil
+		return &SubscriptionContext{Callback: cb, unsubscribe: client.SubscribeToDiagnostics(cb)}, nil
 	}
 
 	// Specific-file subscription: only fire notify when the matching file updates.
@@ -48,8 +50,7 @@ func HandleSubscribeDiagnostics(
 			notify(updatedURI)
 		}
 	})
-	client.SubscribeToDiagnostics(cb)
-	return &SubscriptionContext{Callback: cb}, nil
+	return &SubscriptionContext{Callback: cb, unsubscribe: client.SubscribeToDiagnostics(cb)}, nil
 }
 
 // HandleUnsubscribeDiagnostics removes a diagnostic subscription.
@@ -62,6 +63,10 @@ func HandleUnsubscribeDiagnostics(
 	if sub == nil {
 		return nil
 	}
-	client.UnsubscribeFromDiagnostics(sub.Callback)
+	if sub.unsubscribe != nil {
+		sub.unsubscribe()
+	} else {
+		client.UnsubscribeFromDiagnostics(sub.Callback)
+	}
 	return nil
 }

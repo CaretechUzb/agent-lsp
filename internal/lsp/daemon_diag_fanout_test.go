@@ -35,7 +35,7 @@ func TestWaitForDiagnostics_UncachedFirstNotificationCounts(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- WaitForDiagnostics(context.Background(), c, []string{uri}, 5000) }()
 
-	time.Sleep(20 * time.Millisecond)
+	waitForDiagSubscribers(t, c, 1)
 	publishDiag(t, serverW, uri, "boom")
 
 	select {
@@ -144,13 +144,13 @@ func TestBrokerConn_DaemonClientReceivesDiagnostics(t *testing.T) {
 	c := NewLSPClient("", nil)
 	c.stdin = clientSide
 	c.frameReader = NewFrameReader(clientSide)
-	go c.readLoop()
+	go c.readLoop(c.frameReader)
 	defer clientSide.Close()
 
 	uri := "file:///daemon.py"
 	done := make(chan error, 1)
 	go func() { done <- WaitForDiagnostics(context.Background(), c, []string{uri}, 5000) }()
-	time.Sleep(20 * time.Millisecond)
+	waitForDiagSubscribers(t, c, 1)
 
 	f := newDiagFanout()
 	f.add(bc)
@@ -163,5 +163,105 @@ func TestBrokerConn_DaemonClientReceivesDiagnostics(t *testing.T) {
 	}
 	if got := c.GetDiagnostics(uri); len(got) != 1 || got[0].Message != "OLS03002" {
 		t.Fatalf("diagnostics = %+v", got)
+	}
+}
+
+// waitForDiagSubscribers blocks until c has at least n diagnostics
+// subscribers, so a test publishes only after its waiter is listening.
+func waitForDiagSubscribers(t *testing.T, c *LSPClient, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		c.diagMu.RLock()
+		have := len(c.diagSubs)
+		c.diagMu.RUnlock()
+		if have >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("diagnostics subscribers = %d, want %d", have, n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// Fan-out reaches every connection, and removing one leaves the others
+// subscribed.
+func TestDiagFanout_MultipleConnections(t *testing.T) {
+	f := newDiagFanout()
+	a, b := newBrokerConn(nil), newBrokerConn(nil)
+	f.add(a)
+	f.add(b)
+	f.publish("file:///x.py", []types.LSPDiagnostic{{Message: "one"}})
+	for name, bc := range map[string]*brokerConn{"a": a, "b": b} {
+		if got := bc.pending["file:///x.py"]; len(got) != 1 || got[0].Message != "one" {
+			t.Errorf("conn %s pending = %+v, want one diagnostic", name, got)
+		}
+	}
+	f.remove(a)
+	f.publish("file:///y.py", nil)
+	if _, ok := a.pending["file:///y.py"]; ok {
+		t.Error("removed connection still received a publish")
+	}
+	if _, ok := b.pending["file:///y.py"]; !ok {
+		t.Error("remaining connection missed a publish after another was removed")
+	}
+}
+
+// A client that stops reading must not wedge the connection's shared write
+// lock forever; the write fails at the deadline instead.
+func TestBrokerConn_WriteDeadline(t *testing.T) {
+	old := brokerWriteTimeout
+	brokerWriteTimeout = 50 * time.Millisecond
+	defer func() { brokerWriteTimeout = old }()
+	brokerSide, clientSide := net.Pipe() // nobody reads clientSide
+	defer clientSide.Close()
+	bc := newBrokerConn(brokerSide)
+	start := time.Now()
+	if err := bc.write([]byte(`{"jsonrpc":"2.0"}`)); err == nil {
+		t.Fatal("write to a non-reading client succeeded")
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("write blocked %s despite the deadline", d)
+	}
+}
+
+func TestEnvMillis(t *testing.T) {
+	const name = "AGENT_LSP_TEST_ENV_MILLIS"
+	def := 7 * time.Millisecond
+	for _, tc := range []struct {
+		val  string
+		want time.Duration
+	}{
+		{"", def},
+		{"250", 250 * time.Millisecond},
+		{"0", 0},
+		{"-5", def},
+		{"abc", def},
+	} {
+		t.Setenv(name, tc.val)
+		if got := envMillis(name, def); got != tc.want {
+			t.Errorf("envMillis(%q) = %s, want %s", tc.val, got, tc.want)
+		}
+	}
+}
+
+// Two subscriptions made at the same call site share a code pointer; the
+// returned unsubscribe must remove only its own. UnsubscribeFromDiagnostics
+// removed both, so a finished WaitForDiagnostics silenced a concurrent one.
+func TestSubscribeToDiagnostics_UnsubscribeIsExact(t *testing.T) {
+	c := NewLSPClient("unused", nil)
+	var hits [2]int
+	subscribe := func(i int) func() {
+		return c.SubscribeToDiagnostics(func(string, []types.LSPDiagnostic) { hits[i]++ })
+	}
+	unsubA := subscribe(0)
+	defer subscribe(1)()
+	unsubA()
+	unsubA() // idempotent
+
+	c.handlePublishDiagnostics([]byte(`{"uri":"file:///z.py","diagnostics":[]}`))
+	if hits[0] != 0 || hits[1] != 1 {
+		t.Fatalf("hits = %v, want [0 1]", hits)
 	}
 }

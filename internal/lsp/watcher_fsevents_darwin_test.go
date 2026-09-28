@@ -3,8 +3,10 @@
 package lsp
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,7 +147,7 @@ func TestFSEventsOp(t *testing.T) {
 		ok     bool
 	}{
 		{"created", fsevItemCreated, true, fsnotify.Create, true},
-		{"created then written", fsevItemCreated | fsevItemModified, true, fsnotify.Write, true},
+		{"created then written", fsevItemCreated | fsevItemModified, true, fsnotify.Create, true},
 		{"modified", fsevItemModified, true, fsnotify.Write, true},
 		{"touched", fsevItemInodeMeta, true, fsnotify.Write, true},
 		{"removed", fsevItemRemoved, false, fsnotify.Remove, true},
@@ -159,5 +161,122 @@ func TestFSEventsOp(t *testing.T) {
 		if got != c.want || ok != c.ok {
 			t.Errorf("%s: fseventsOp(0x%x, %v) = %v, %v; want %v, %v", c.name, c.flags, c.exists, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+// A folder added inside an excluded directory of another root (a vendored
+// module, a .claude worktree) must be filtered relative to itself, not dropped
+// because the enclosing root excludes "vendor".
+func TestFSEvents_NestedRootInsideExcludedDir(t *testing.T) {
+	t.Setenv("AGENT_LSP_WATCH_BACKEND", "")
+	root := t.TempDir()
+	lib := filepath.Join(root, "vendor", "lib")
+	if err := os.MkdirAll(lib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w, _ := newTestFileWatcher(t)
+	w.AddTree(root)
+	w.AddTree(lib)
+
+	file := filepath.Join(lib, "mod.py")
+	if err := os.WriteFile(file, []byte("x = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	waitEvent(t, w, file)
+}
+
+// On case-insensitive APFS a root spelled in another case must still map
+// events: FSEvents reports the stored spelling, EvalSymlinks keeps the caller's.
+func TestFSEvents_RootSpelledInOtherCase(t *testing.T) {
+	t.Setenv("AGENT_LSP_WATCH_BACKEND", "")
+	parent := t.TempDir()
+	real := filepath.Join(parent, "CaseDir")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lower := filepath.Join(parent, "casedir")
+	if _, err := os.Stat(lower); err != nil {
+		t.Skip("case-sensitive volume")
+	}
+	w, _ := newTestFileWatcher(t)
+	if err := w.AddTree(lower); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "a.py"), []byte("x = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	waitEvent(t, w, filepath.Join(lower, "a.py"))
+}
+
+// A dropped-events flag on a directory must turn into per-file events: a
+// Changed event for a directory URI is ignored by most servers.
+func TestFSEvents_DropRescansFiles(t *testing.T) {
+	t.Setenv("AGENT_LSP_WATCH_BACKEND", "")
+	root := t.TempDir()
+	sub := filepath.Join(root, "pkg")
+	mkDirWithFiles(t, sub, 3)
+	mkDirWithFiles(t, filepath.Join(sub, "node_modules"), 2) // excluded
+	w, _ := newTestFileWatcher(t)
+	if err := w.AddTree(root); err != nil {
+		t.Fatal(err)
+	}
+	fw := w.(*fseventsWatcher)
+	real, _ := canonicalDir(sub)
+	go fw.handle(real, fsevMustScanSubDirs)
+
+	for i := 0; i < 3; i++ {
+		ev := waitEvent(t, w, filepath.Join(sub, fmt.Sprintf("f%d", i)))
+		if ev.Op != fsnotify.Write {
+			t.Errorf("rescan op = %v, want Write", ev.Op)
+		}
+	}
+	select {
+	case ev := <-w.Events():
+		if strings.Contains(ev.Name, "node_modules") {
+			t.Fatalf("rescan reported excluded file %s", ev.Name)
+		}
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// Re-adding a folder (remove + add workspace folder) must not stack streams.
+func TestFSEvents_AddTreeDeduplicatesRoots(t *testing.T) {
+	t.Setenv("AGENT_LSP_WATCH_BACKEND", "")
+	root := t.TempDir()
+	w, _ := newTestFileWatcher(t)
+	for i := 0; i < 3; i++ {
+		if err := w.AddTree(root); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fw := w.(*fseventsWatcher)
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+	if len(fw.streams) != 1 || len(fw.roots) != 1 {
+		t.Fatalf("streams=%d roots=%d, want 1 and 1", len(fw.streams), len(fw.roots))
+	}
+}
+
+// A root FSEvents cannot stream must report an error, so startWatcher falls
+// back to kqueue instead of running with no streams.
+func TestFSEvents_AddTreeReportsFailure(t *testing.T) {
+	t.Setenv("AGENT_LSP_WATCH_BACKEND", "")
+	w, _ := newTestFileWatcher(t)
+	if err := w.AddTree(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("AddTree on a missing root returned nil")
+	}
+	fw := w.(*fseventsWatcher)
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+	if len(fw.roots) != 0 {
+		t.Fatalf("failed root left registered: %v", fw.roots)
+	}
+}
+
+func TestNewFileWatcher_ForcedKqueue(t *testing.T) {
+	t.Setenv("AGENT_LSP_WATCH_BACKEND", "kqueue")
+	w, backend := newTestFileWatcher(t)
+	if _, ok := w.(*kqueueWatcher); !ok || backend != "fsnotify" {
+		t.Fatalf("got %T / %q, want *kqueueWatcher / fsnotify", w, backend)
 	}
 }

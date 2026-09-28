@@ -22,6 +22,15 @@ The auto-watcher keeps the index fresh by watching the workspace for file change
 | `AGENT_LSP_WATCH_MAX_ENTRIES` | `50000` | Global budget on total watched entries (≈ file descriptors on macOS). Once reached, the walk stops and remaining files rely on explicit refresh. Raise on very large source trees. |
 | `AGENT_LSP_WATCH_MAX_FDS` | `60000` | Runtime guard: the watcher samples the process's open file descriptors every 30s and tears itself down if the count exceeds this, catching descriptors that fsnotify opens for files *created while running* (which the startup budget above cannot see). Well below the macOS per-process limit (245,760). Raise on very large source trees. |
 
+## Diagnostics
+
+`get_diagnostics` waits for the server's pushed `textDocument/publishDiagnostics` to settle.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AGENT_LSP_DIAG_QUIET_MS` | `500` | Quiet window after the last fresh notification before diagnostics count as settled. Raise it for servers that publish an empty set first and the real one later (OdooLS: about 1s apart). |
+| `AGENT_LSP_DIAG_CACHED_SETTLE_MS` | `0` (off) | When a file already has cached diagnostics and no fresh notification arrives within this window, accept the cache instead of waiting for the timeout. For servers that do not republish when a document is reopened unchanged (OdooLS). |
+
 ## Daemon Mode
 
 | Variable | Default | Description |

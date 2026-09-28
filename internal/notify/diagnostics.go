@@ -120,11 +120,10 @@ func SubscribeDiagnostics(hub *Hub, subscriber DiagnosticSubscriber) func() {
 
 	debouncer := newDiagDebouncer(2*time.Second, emit)
 
-	cb := debouncer.OnDiagnostic
-	subscriber.SubscribeToDiagnostics(cb)
+	unsubscribe := subscriber.SubscribeToDiagnostics(debouncer.OnDiagnostic)
 
 	return func() {
-		subscriber.UnsubscribeFromDiagnostics(cb)
+		unsubscribe()
 		debouncer.Stop()
 	}
 }

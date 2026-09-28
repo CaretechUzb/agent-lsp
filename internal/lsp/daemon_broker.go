@@ -196,24 +196,28 @@ func RunBroker(cfg BrokerConfig) error {
 			infoMu.Unlock()
 
 			go func(c net.Conn) {
+				bc := newBrokerConn(c)
+				// Deferred so a recovered panic in the handler still unregisters
+				// the connection and lets the daemon go idle.
+				defer func() {
+					fanout.remove(bc)
+					bc.close()
+					connMu.Lock()
+					delete(connections, c)
+					connCount.Add(-1)
+					lastDisconn = time.Now()
+					connMu.Unlock()
+				}()
 				defer func() {
 					if r := recover(); r != nil {
 						logging.Log(logging.LevelWarning, fmt.Sprintf("daemon: panic in broker connection handler: %v", r))
 					}
 				}()
-				bc := newBrokerConn(c)
 				// Register before snapshotting so no live update falls between.
 				fanout.add(bc)
 				go bc.writeLoop()
 				bc.replay(client.GetAllDiagnostics())
 				handleBrokerConnection(ctx, bc, client)
-				fanout.remove(bc)
-				bc.close()
-				connMu.Lock()
-				delete(connections, c)
-				connCount.Add(-1)
-				lastDisconn = time.Now()
-				connMu.Unlock()
 			}(conn)
 
 		case <-inactivityTicker.C:
@@ -332,6 +336,9 @@ func readFramedMessage(reader *bufio.Reader) ([]byte, error) {
 	}
 	if contentLength == 0 {
 		return nil, fmt.Errorf("no Content-Length header")
+	}
+	if contentLength < 0 {
+		return nil, fmt.Errorf("invalid Content-Length: %d", contentLength)
 	}
 	body := make([]byte, contentLength)
 	_, err := io.ReadFull(reader, body)

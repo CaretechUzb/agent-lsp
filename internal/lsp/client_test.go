@@ -38,7 +38,7 @@ func newTestClient(t *testing.T) (*LSPClient, io.WriteCloser, io.ReadCloser) {
 	c.stdin = clientToServerW
 	c.frameReader = NewFrameReader(serverToClientR)
 
-	go c.readLoop()
+	go c.readLoop(c.frameReader)
 
 	t.Cleanup(func() {
 		serverToClientW.Close()

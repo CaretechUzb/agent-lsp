@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/blackwell-systems/agent-lsp/internal/lsp"
@@ -13,6 +14,10 @@ import (
 	"github.com/blackwell-systems/agent-lsp/internal/types"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// wiredClients records clients whose notifications are wired, so repeated
+// start_lsp calls on the same client do not stack subscriptions.
+var wiredClients sync.Map // *lsp.LSPClient -> struct{}
 
 // mcpNotifySender implements notify.NotificationSender using a live MCP session.
 type mcpNotifySender struct {
@@ -47,25 +52,46 @@ func setupNotificationHub() *notify.Hub {
 // provided by the given LSP client: diagnostics, workspace readiness, health
 // monitoring, and file change staleness detection.
 func wireNotificationsToClient(hub *notify.Hub, client *lsp.LSPClient) {
+	// start_lsp and auto-init may hand over a client that is already wired
+	// (single-server mode reuses one client); wire each client once.
+	if _, already := wiredClients.LoadOrStore(client, struct{}{}); already {
+		return
+	}
+	// Each stop runs when this client shuts down (a start_lsp restart must not
+	// leave its health poller reporting the intentional stop as a crash) and
+	// again on hub close; OnceFunc makes the second call a no-op.
+	var stops []func()
+	addStop := func(fn func()) {
+		once := sync.OnceFunc(fn)
+		stops = append(stops, once)
+		hub.AddStopFunc(once)
+	}
+	client.OnShutdown(func() {
+		for _, stop := range stops {
+			stop()
+		}
+		wiredClients.Delete(client)
+	})
+
 	// Diagnostic notifications (debounced).
 	stopDiag := notify.SubscribeDiagnostics(hub, client)
-	hub.AddStopFunc(stopDiag)
+	addStop(stopDiag)
 
 	// Diagnostic regression detection (fires when new errors appear).
 	stopDiagChange := notify.SubscribeDiagnosticChanges(hub, client)
-	hub.AddStopFunc(stopDiagChange)
+	addStop(stopDiagChange)
 
 	// Workspace ready notification (polls until indexed).
 	stopReady := notify.SubscribeWorkspaceReady(hub, client, 2*time.Second)
-	hub.AddStopFunc(stopReady)
+	addStop(stopReady)
 
 	// Health monitoring (polls for process liveness).
 	stopHealth := notify.SubscribeHealth(hub, client, 5*time.Second)
-	hub.AddStopFunc(stopHealth)
+	addStop(stopHealth)
 
 	// Stale reference detection (debounces file changes).
 	stale := notify.NewStaleNotifier(hub, 3*time.Second)
-	hub.AddStopFunc(stale.Stop)
+	addStop(stale.Stop)
 
 	// Bridge file watcher events to the stale notifier.
 	client.SubscribeToFileChanges(func(changes []types.FileChangeEvent) {

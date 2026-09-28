@@ -99,8 +99,7 @@ func WaitForDiagnostics(ctx context.Context, client *LSPClient, uris []string, t
 		}
 	})
 
-	client.SubscribeToDiagnostics(cb)
-	defer client.UnsubscribeFromDiagnostics(cb)
+	defer client.SubscribeToDiagnostics(cb)()
 
 	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 	quietWindow := diagQuietWindow

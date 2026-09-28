@@ -157,7 +157,7 @@ type LSPClient struct {
 	// diagnostics
 	diagMu   sync.RWMutex
 	diags    map[string][]types.LSPDiagnostic
-	diagSubs []types.DiagnosticUpdateCallback
+	diagSubs []*diagSub
 
 	// workspace readiness ($/progress)
 	progressMu     sync.Mutex
@@ -201,8 +201,17 @@ type LSPClient struct {
 	// of file changes automatically, keeping the LSP index fresh.
 	watcherMu     sync.Mutex // guards watcherStop, fileChangeCbs (C2: prevents data race)
 	watcherStop   chan struct{}
+	watcherDone   chan struct{} // closes when the current watcher goroutine exits
 	watcher       fileWatcher                     // C1: held so addWatcherRoot can add new roots
 	fileChangeCbs []func([]types.FileChangeEvent) // proactive notification callbacks
+
+	// exitDone closes when the exit monitor has reaped the process; Shutdown
+	// waits on it instead of calling cmd.Wait a second time. Guarded by mu.
+	exitDone chan struct{}
+	// shutdownHooks run once at the start of Shutdown (e.g. to stop the
+	// health poller so an intentional stop is not reported as a crash).
+	// Guarded by mu.
+	shutdownHooks []func()
 }
 
 // NewLSPClient creates a new, unstarted LSP client.
@@ -280,7 +289,7 @@ func NewDaemonClient(info *DaemonInfo) (*LSPClient, error) {
 	}
 
 	// Start reading responses from the socket.
-	go c.readLoop()
+	go c.readLoop(c.frameReader)
 
 	return c, nil
 }
@@ -311,7 +320,7 @@ func NewPassiveClient(addr string) (*LSPClient, error) {
 	c.nextID.Store(0)
 	c.progressCond = sync.NewCond(&c.progressMu)
 
-	go c.readLoop()
+	go c.readLoop(c.frameReader)
 
 	return c, nil
 }
@@ -380,29 +389,42 @@ func (c *LSPClient) start() error {
 
 	logging.Log(logging.LevelInfo, fmt.Sprintf("LSP server started: %s (PID %d)", c.serverPath, cmd.Process.Pid))
 
+	fr := NewFrameReader(stdout)
+	exitDone := make(chan struct{})
+	c.mu.Lock()
 	c.cmd = cmd
 	c.stdin = stdin
-	c.frameReader = NewFrameReader(stdout)
+	c.frameReader = fr
+	c.exited = false
+	c.exitDone = exitDone
+	c.mu.Unlock()
 
 	go c.drainStderr(stderr)
-	go c.readLoop()
+	go c.readLoop(fr)
 
-	// Monitor process exit.
+	// Monitor process exit. This is the only cmd.Wait caller.
 	startTime := time.Now()
 	go func() {
+		defer close(exitDone)
 		err := cmd.Wait()
 		uptime := time.Since(startTime).Round(time.Second)
-		exitErr := fmt.Errorf("lsp process exited: %w", err)
-		c.rejectPending(exitErr)
 		c.mu.Lock()
-		c.initialized = false
-		c.exited = true
-		// Null out stdin so later writeRaw calls return a clear "process has
-		// exited" error instead of writing to a closed pipe. Do not Close it
-		// here: the process already exited (pipe is closed) and Shutdown may
-		// also close it, so nulling the reference avoids a double-close race.
-		c.stdin = nil
+		// After Restart the client already runs a newer process; this one's
+		// exit must not reset that process's state or reject its requests.
+		current := c.cmd == cmd
+		if current {
+			c.initialized = false
+			c.exited = true
+			// Null out stdin so later writeRaw calls return a clear "process has
+			// exited" error instead of writing to a closed pipe. Do not Close it
+			// here: the process already exited (pipe is closed) and Shutdown may
+			// also close it, so nulling the reference avoids a double-close race.
+			c.stdin = nil
+		}
 		c.mu.Unlock()
+		if current {
+			c.rejectPending(fmt.Errorf("lsp process exited: %w", err))
+		}
 		if err != nil {
 			c.stderrMu.Lock()
 			buf := string(c.stderrBuf)
@@ -437,14 +459,14 @@ func (c *LSPClient) drainStderr(r io.Reader) {
 }
 
 // readLoop reads and dispatches all incoming messages.
-func (c *LSPClient) readLoop() {
+func (c *LSPClient) readLoop(fr *FrameReader) {
 	defer func() {
 		if r := recover(); r != nil {
 			logging.Log(logging.LevelError, fmt.Sprintf("readLoop panic: %v\n%s", r, debug.Stack()))
 		}
 	}()
 	for {
-		raw, err := c.frameReader.ReadMessage()
+		raw, err := fr.ReadMessage()
 		if err != nil {
 			if err != io.EOF {
 				logging.Log(logging.LevelDebug, "LSP read loop ended: "+err.Error())
@@ -620,12 +642,12 @@ func (c *LSPClient) handlePublishDiagnostics(params json.RawMessage) {
 
 	c.diagMu.Lock()
 	c.diags[NormalizeFileURI(p.URI)] = p.Diagnostics
-	subs := make([]types.DiagnosticUpdateCallback, len(c.diagSubs))
+	subs := make([]*diagSub, len(c.diagSubs))
 	copy(subs, c.diagSubs)
 	c.diagMu.Unlock()
 
-	for _, cb := range subs {
-		cb(p.URI, p.Diagnostics)
+	for _, s := range subs {
+		s.cb(p.URI, p.Diagnostics)
 	}
 }
 
@@ -1197,6 +1219,19 @@ func (c *LSPClient) Initialize(ctx context.Context, rootDir string) error {
 // For direct-mode clients, it sends shutdown/exit, waits up to 3 seconds for
 // the process to exit, then force-kills it to prevent orphaned processes.
 func (c *LSPClient) Shutdown(ctx context.Context) error {
+	c.mu.Lock()
+	hooks := c.shutdownHooks
+	c.shutdownHooks = nil
+	c.mu.Unlock()
+	for _, fn := range hooks {
+		fn()
+	}
+	return c.shutdown(ctx)
+}
+
+// shutdown stops the server without running the OnShutdown hooks, so Restart
+// keeps the client's subscriptions for the process that replaces it.
+func (c *LSPClient) shutdown(ctx context.Context) error {
 	// Daemon and passive mode: just close the socket, don't kill the server.
 	if c.isDaemon || c.isPassive {
 		c.mu.Lock()
@@ -1207,6 +1242,16 @@ func (c *LSPClient) Shutdown(ctx context.Context) error {
 			conn.Close()
 		}
 		return nil
+	}
+
+	// Stop the watcher first and let its final flush finish: it uses the
+	// reference cache and must not reach the server after shutdown/exit.
+	if done := c.stopWatcher(); done != nil {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			logging.Log(logging.LevelWarning, "auto-watcher did not stop within 2s")
+		}
 	}
 
 	// Close the reference cache.
@@ -1221,39 +1266,78 @@ func (c *LSPClient) Shutdown(ctx context.Context) error {
 		c.scopeConfig = nil
 	}
 
-	c.stopWatcher()
-	_, err := c.sendRequest(ctx, "shutdown", nil)
-	if err != nil {
-		// If the shutdown request fails (server already dead, pipe broken),
-		// skip exit and go straight to process cleanup.
-		c.killProcess()
-		return fmt.Errorf("shutdown request: %w", err)
+	// The shutdown/exit handshake is bounded as a whole: sendRequest only
+	// starts its timeout after the write, and a server that stopped reading
+	// stdin blocks that write forever. Killing the process breaks the pipe
+	// and releases a blocked write.
+	graceful := make(chan error, 1)
+	go func() {
+		if _, err := c.sendRequest(ctx, "shutdown", nil); err != nil {
+			graceful <- fmt.Errorf("shutdown request: %w", err)
+			return
+		}
+		_ = c.sendNotification("exit", nil)
+		graceful <- nil
+	}()
+	var err error
+	select {
+	case err = <-graceful:
+	case <-time.After(shutdownGrace):
+		err = fmt.Errorf("shutdown handshake timed out after %s", shutdownGrace)
 	}
-	_ = c.sendNotification("exit", nil)
+	if err != nil {
+		// Server dead, pipe broken or unresponsive: go straight to cleanup.
+		c.killProcess()
+		c.awaitExit(3 * time.Second)
+		return err
+	}
 	c.mu.Lock()
 	if c.stdin != nil {
 		c.stdin.Close()
 		c.stdin = nil
 	}
 	cmd := c.cmd
+	exitDone := c.exitDone
 	c.mu.Unlock()
 
-	// Wait for the process to exit, force-kill if it takes too long.
-	if cmd != nil && cmd.Process != nil {
-		done := make(chan struct{})
-		go func() {
-			cmd.Wait()
-			close(done)
-		}()
+	// Wait for the exit monitor to reap the process; force-kill if it lingers.
+	if cmd != nil && cmd.Process != nil && exitDone != nil {
 		select {
-		case <-done:
+		case <-exitDone:
 			// Process exited cleanly.
 		case <-time.After(3 * time.Second):
 			logging.Log(logging.LevelWarning, fmt.Sprintf("LSP server %s (PID %d) did not exit after 3s, killing", c.serverPath, cmd.Process.Pid))
-			cmd.Process.Kill()
+			_ = cmd.Process.Kill()
+			c.awaitExit(3 * time.Second)
 		}
 	}
 	return nil
+}
+
+// awaitExit waits up to d for the exit monitor to reap the current process,
+// so a Restart that follows does not race the old process's teardown.
+func (c *LSPClient) awaitExit(d time.Duration) {
+	c.mu.Lock()
+	exitDone := c.exitDone
+	c.mu.Unlock()
+	if exitDone == nil {
+		return
+	}
+	select {
+	case <-exitDone:
+	case <-time.After(d):
+	}
+}
+
+// shutdownGrace bounds the shutdown request plus exit notification.
+const shutdownGrace = 5 * time.Second
+
+// OnShutdown registers fn to run once when Shutdown begins, before the
+// server is stopped. Callers use it to detach per-client subscriptions.
+func (c *LSPClient) OnShutdown(fn func()) {
+	c.mu.Lock()
+	c.shutdownHooks = append(c.shutdownHooks, fn)
+	c.mu.Unlock()
 }
 
 // killProcess force-kills the subprocess if it's still running.
@@ -1298,8 +1382,9 @@ func (c *LSPClient) RefCache() *SymbolRefCache {
 
 // Restart shuts down the current server and reinitializes it.
 func (c *LSPClient) Restart(ctx context.Context, rootDir string) error {
-	// Try graceful shutdown; ignore errors since we restart anyway.
-	_ = c.Shutdown(ctx)
+	// Try graceful shutdown; ignore errors since we restart anyway. Hooks stay
+	// registered: the same client keeps serving after the restart.
+	_ = c.shutdown(ctx)
 
 	// Reset state.
 	c.mu.Lock()
@@ -1439,9 +1524,14 @@ func (c *LSPClient) GetAllDiagnostics() map[string][]types.LSPDiagnostic {
 // SubscribeToDiagnostics registers cb to be called on every publishDiagnostics notification.
 // It immediately fires cb for every URI already in the diagnostics cache so that
 // new subscribers do not miss diagnostics published before they registered.
-func (c *LSPClient) SubscribeToDiagnostics(cb types.DiagnosticUpdateCallback) {
+//
+// The returned func removes exactly this subscription. Prefer it over
+// UnsubscribeFromDiagnostics: closures created at the same site share a code
+// pointer, so pointer comparison cannot tell two such subscriptions apart.
+func (c *LSPClient) SubscribeToDiagnostics(cb types.DiagnosticUpdateCallback) (unsubscribe func()) {
+	s := &diagSub{cb: cb}
 	c.diagMu.Lock()
-	c.diagSubs = append(c.diagSubs, cb)
+	c.diagSubs = append(c.diagSubs, s)
 	// Replay existing diagnostics under the same lock to avoid races.
 	snapshot := make(map[string][]types.LSPDiagnostic, len(c.diags))
 	for uri, diags := range c.diags {
@@ -1453,17 +1543,35 @@ func (c *LSPClient) SubscribeToDiagnostics(cb types.DiagnosticUpdateCallback) {
 	for uri, diags := range snapshot {
 		cb(uri, diags)
 	}
+	return func() {
+		c.diagMu.Lock()
+		defer c.diagMu.Unlock()
+		for i, have := range c.diagSubs {
+			if have == s {
+				c.diagSubs = append(c.diagSubs[:i:i], c.diagSubs[i+1:]...)
+				return
+			}
+		}
+	}
 }
 
-// UnsubscribeFromDiagnostics removes a previously registered callback.
-// Uses reflect to compare function pointers (the only way to compare func values in Go).
+// diagSub is one diagnostics subscription; its pointer is its identity.
+type diagSub struct {
+	cb types.DiagnosticUpdateCallback
+}
+
+// UnsubscribeFromDiagnostics removes every callback with cb's code pointer.
+//
+// Deprecated: closures from the same site share a code pointer, so this also
+// removes other subscriptions made there. Use the func SubscribeToDiagnostics
+// returns.
 func (c *LSPClient) UnsubscribeFromDiagnostics(cb types.DiagnosticUpdateCallback) {
 	c.diagMu.Lock()
 	defer c.diagMu.Unlock()
 	cbPtr := reflect.ValueOf(cb).Pointer()
-	subs := make([]types.DiagnosticUpdateCallback, 0, len(c.diagSubs))
+	subs := make([]*diagSub, 0, len(c.diagSubs))
 	for _, s := range c.diagSubs {
-		if reflect.ValueOf(s).Pointer() != cbPtr {
+		if reflect.ValueOf(s.cb).Pointer() != cbPtr {
 			subs = append(subs, s)
 		}
 	}
@@ -1616,8 +1724,7 @@ func (c *LSPClient) WaitForFileIndexed(ctx context.Context, uri string, timeoutM
 			}
 		}
 	}
-	c.SubscribeToDiagnostics(cb)
-	defer c.UnsubscribeFromDiagnostics(cb)
+	defer c.SubscribeToDiagnostics(cb)()
 
 	timeout := time.NewTimer(time.Duration(timeoutMs) * time.Millisecond)
 	defer timeout.Stop()
@@ -2751,10 +2858,13 @@ func (c *LSPClient) startWatcher(rootDir string) {
 	c.watcherMu.Lock()
 	c.stopWatcherLocked()
 	stop := make(chan struct{})
+	done := make(chan struct{})
 	c.watcherStop = stop
+	c.watcherDone = done
 	c.watcherMu.Unlock()
 
 	go func() {
+		defer close(done)
 		defer func() {
 			if r := recover(); r != nil {
 				logging.Log(logging.LevelError, fmt.Sprintf("startWatcher panic: %v\n%s", r, debug.Stack()))
@@ -2765,127 +2875,167 @@ func (c *LSPClient) startWatcher(rootDir string) {
 			logging.Log(logging.LevelDebug, "auto-watcher: failed to create watcher: "+err.Error())
 			return
 		}
+		// Watch the workspace. The kqueue backend walks it bounded so a large
+		// data/cache tree cannot exhaust the fd table on macOS (issue #18).
+		if err := watcher.AddTree(rootDir); err != nil {
+			// FSEvents could not stream this root; kqueue still can.
+			logging.Log(logging.LevelWarning, fmt.Sprintf("auto-watcher: %s backend cannot watch %s (%v); falling back to fsnotify", backend, rootDir, err))
+			_ = watcher.Close()
+			if watcher, err = newKqueueWatcher(lim); err != nil {
+				logging.Log(logging.LevelDebug, "auto-watcher: failed to create watcher: "+err.Error())
+				return
+			}
+			backend = "fsnotify"
+			_ = watcher.AddTree(rootDir)
+		}
+		logging.Log(logging.LevelDebug, fmt.Sprintf("auto-watcher: %s backend on %s", backend, rootDir))
+
 		// Register Close first so nil-assignment defer (registered after) runs first (LIFO).
 		defer watcher.Close()
 		c.watcherMu.Lock()
+		if c.watcherStop != stop {
+			// Stopped or superseded while the tree was being walked.
+			c.watcherMu.Unlock()
+			return
+		}
 		c.watcher = watcher
 		c.watcherMu.Unlock()
 		defer func() {
 			c.watcherMu.Lock()
-			c.watcher = nil
+			if c.watcher == watcher { // a restart may already have installed a newer one
+				c.watcher = nil
+			}
 			c.watcherMu.Unlock()
 		}()
 
-		// Watch the workspace. The kqueue backend walks it bounded so a large
-		// data/cache tree cannot exhaust the fd table on macOS (issue #18).
-		watcher.AddTree(rootDir)
-		logging.Log(logging.LevelDebug, fmt.Sprintf("auto-watcher: %s backend on %s", backend, rootDir))
-
-		// debounce: collect events for 150ms then flush as a batch.
-		const debounce = 150 * time.Millisecond
-		pending := make(map[string]fsnotify.Op)
-		var timer *time.Timer
-		flush := func() {
-			if len(pending) == 0 {
-				return
-			}
-			changes := make([]types.FileChangeEvent, 0, len(pending))
-			for path, op := range pending {
-				changeType := 2 // Changed
-				if op&fsnotify.Create != 0 {
-					changeType = 1 // Created
-				} else if op&(fsnotify.Remove|fsnotify.Rename) != 0 {
-					changeType = 3 // Deleted
-				}
-				changes = append(changes, types.FileChangeEvent{
-					URI:  "file://" + path,
-					Type: changeType,
-				})
-			}
-			pending = make(map[string]fsnotify.Op)
-			if err := c.DidChangeWatchedFiles(changes); err != nil {
-				logging.Log(logging.LevelDebug, "auto-watcher: didChangeWatchedFiles error: "+err.Error())
-			}
-			// Notify proactive file-change subscribers.
-			c.watcherMu.Lock()
-			cbs := make([]func([]types.FileChangeEvent), len(c.fileChangeCbs))
-			copy(cbs, c.fileChangeCbs)
-			c.watcherMu.Unlock()
-			for _, cb := range cbs {
-				cb(changes)
-			}
-			// Invalidate cached references for changed files.
-			if c.refCache != nil {
-				for _, ch := range changes {
-					path := uripkg.URIToPath(ch.URI)
-					if path != "" {
-						c.refCache.InvalidateFile(path)
-					}
-				}
-			}
-		}
-
-		// Runtime fd guard: the startup walk is bounded, but fsnotify opens a
-		// per-file fd for each file created at runtime in an already-watched
-		// directory. Sample the process fd count and tear down before it can
-		// approach the per-process limit (issue #18).
-		maxFDs := loadWatchMaxFDs()
-		fdTicker := time.NewTicker(watchFDCheckInterval)
-		defer fdTicker.Stop()
-
-		for {
-			select {
-			case <-stop:
-				if timer != nil {
-					timer.Stop()
-				}
-				flush()
-				return
-			case <-fdTicker.C:
-				if n := openFDCount(); n > maxFDs {
-					logging.Log(logging.LevelWarning, fmt.Sprintf("auto-watcher: process holds %d open fds (> %d limit); disabling watcher to prevent fd exhaustion (issue #18). Files now rely on explicit did_change_watched_files (raise AGENT_LSP_WATCH_MAX_FDS to extend).", n, maxFDs))
-					if timer != nil {
-						timer.Stop()
-					}
-					flush()
-					return // deferred watcher.Close() releases the leaked fds
-				}
-			case event, ok := <-watcher.Events():
-				if !ok {
-					return
-				}
-				// Skip directory events and hidden files.
-				name := filepath.Base(event.Name)
-				if strings.HasPrefix(name, ".") {
-					continue
-				}
-				pending[event.Name] = pending[event.Name] | event.Op
-				// A directory created at runtime must be added explicitly on
-				// non-recursive backends.
-				if event.Op&fsnotify.Create != 0 {
-					if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-						watcher.WatchNewDir(event.Name)
-					}
-				}
-				if timer != nil {
-					timer.Stop()
-				}
-				timer = time.AfterFunc(debounce, flush)
-			case err, ok := <-watcher.Errors():
-				if !ok {
-					return
-				}
-				logging.Log(logging.LevelDebug, "auto-watcher error: "+err.Error())
-			}
-		}
+		c.runWatcherLoop(watcher, stop, watcherDebounce)
 	}()
 }
 
-// stopWatcher stops the auto-watcher if one is running.
-func (c *LSPClient) stopWatcher() {
+const (
+	watcherDebounce = 150 * time.Millisecond // collect events this long, then flush one batch
+	// watcherMaxBatch flushes early once this many paths are pending, so a
+	// checkout or install storm cannot grow one batch without bound.
+	watcherMaxBatch = 5000
+)
+
+// runWatcherLoop turns watcher events into debounced didChangeWatchedFiles
+// batches until stop closes or the watcher fails. Everything, including the
+// flush, runs on this goroutine: pending is not safe for concurrent use.
+func (c *LSPClient) runWatcherLoop(watcher fileWatcher, stop <-chan struct{}, debounce time.Duration) {
+	pending := make(map[string]fsnotify.Op)
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	stopTimer := func() {
+		if timer != nil {
+			timer.Stop()
+			timer, timerC = nil, nil
+		}
+	}
+	defer stopTimer()
+	flush := func() {
+		stopTimer()
+		if len(pending) == 0 {
+			return
+		}
+		changes := make([]types.FileChangeEvent, 0, len(pending))
+		for path, op := range pending {
+			changeType := 2 // Changed
+			if op&fsnotify.Create != 0 {
+				changeType = 1 // Created
+			} else if op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+				changeType = 3 // Deleted
+			}
+			changes = append(changes, types.FileChangeEvent{
+				URI:  "file://" + path,
+				Type: changeType,
+			})
+		}
+		pending = make(map[string]fsnotify.Op)
+		if err := c.DidChangeWatchedFiles(changes); err != nil {
+			logging.Log(logging.LevelDebug, "auto-watcher: didChangeWatchedFiles error: "+err.Error())
+		}
+		// Notify proactive file-change subscribers.
+		c.watcherMu.Lock()
+		cbs := make([]func([]types.FileChangeEvent), len(c.fileChangeCbs))
+		copy(cbs, c.fileChangeCbs)
+		c.watcherMu.Unlock()
+		for _, cb := range cbs {
+			cb(changes)
+		}
+		// Invalidate cached references for changed files.
+		if rc := c.refCache; rc != nil {
+			for _, ch := range changes {
+				path := uripkg.URIToPath(ch.URI)
+				if path != "" {
+					rc.InvalidateFile(path)
+				}
+			}
+		}
+	}
+
+	// Runtime fd guard: the startup walk is bounded, but fsnotify opens a
+	// per-file fd for each file created at runtime in an already-watched
+	// directory. Sample the process fd count and tear down before it can
+	// approach the per-process limit (issue #18).
+	maxFDs := loadWatchMaxFDs()
+	fdTicker := time.NewTicker(watchFDCheckInterval)
+	defer fdTicker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			flush()
+			return
+		case <-timerC:
+			flush()
+		case <-fdTicker.C:
+			if n := openFDCount(); n > maxFDs {
+				logging.Log(logging.LevelWarning, fmt.Sprintf("auto-watcher: process holds %d open fds (> %d limit); disabling watcher to prevent fd exhaustion (issue #18). Files now rely on explicit did_change_watched_files (raise AGENT_LSP_WATCH_MAX_FDS to extend).", n, maxFDs))
+				flush()
+				return // the caller's deferred watcher.Close() releases the leaked fds
+			}
+		case event, ok := <-watcher.Events():
+			if !ok {
+				flush()
+				return
+			}
+			// Skip hidden files.
+			if strings.HasPrefix(filepath.Base(event.Name), ".") {
+				continue
+			}
+			pending[event.Name] = pending[event.Name] | event.Op
+			// A directory created at runtime must be added explicitly on
+			// non-recursive backends.
+			if event.Op&fsnotify.Create != 0 {
+				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+					watcher.WatchNewDir(event.Name)
+				}
+			}
+			if len(pending) >= watcherMaxBatch {
+				flush()
+				continue
+			}
+			stopTimer()
+			timer = time.NewTimer(debounce)
+			timerC = timer.C
+		case err, ok := <-watcher.Errors():
+			if !ok {
+				flush()
+				return
+			}
+			logging.Log(logging.LevelDebug, "auto-watcher error: "+err.Error())
+		}
+	}
+}
+
+// stopWatcher stops the auto-watcher if one is running and returns a channel
+// that closes once its goroutine has exited (nil if none was started).
+func (c *LSPClient) stopWatcher() <-chan struct{} {
 	c.watcherMu.Lock()
+	defer c.watcherMu.Unlock()
 	c.stopWatcherLocked()
-	c.watcherMu.Unlock()
+	return c.watcherDone
 }
 
 // stopWatcherLocked is the lock-free inner body of stopWatcher.
@@ -2910,7 +3060,9 @@ func (c *LSPClient) addWatcherRoot(path string) {
 	}
 	// The kqueue backend charges the new folder to the same entry budget, so
 	// extending coverage cannot exhaust the fd table on macOS (issue #18).
-	w.AddTree(path)
+	if err := w.AddTree(path); err != nil {
+		logging.Log(logging.LevelWarning, fmt.Sprintf("auto-watcher: cannot watch added folder %s: %v", path, err))
+	}
 }
 
 // GetSemanticTokenLegend returns the token type and modifier name arrays

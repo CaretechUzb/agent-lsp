@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/blackwell-systems/agent-lsp/internal/logging"
 	"github.com/blackwell-systems/agent-lsp/internal/types"
@@ -79,18 +80,31 @@ func newBrokerConn(conn net.Conn) *brokerConn {
 	}
 }
 
+// brokerWriteTimeout bounds one socket write. A client that stops reading
+// would otherwise block the write, and with it every response on the shared
+// write lock, forever. A var so tests can shorten it.
+var brokerWriteTimeout = 10 * time.Second
+
 func (bc *brokerConn) write(msg []byte) error {
 	bc.writeMu.Lock()
 	defer bc.writeMu.Unlock()
+	if err := bc.conn.SetWriteDeadline(time.Now().Add(brokerWriteTimeout)); err != nil {
+		return err
+	}
 	return writeFramedMessage(bc.conn, msg)
 }
 
 // enqueue queues uri's diagnostics for forwarding. live=false is the cache
 // replay, which yields to anything already delivered live.
 func (bc *brokerConn) enqueue(uri string, diags []types.LSPDiagnostic, live bool) {
+	// Live callbacks carry the server's raw URI while the replay snapshot is
+	// keyed by NormalizeFileURI; key both the same way so precedence holds.
+	uri = NormalizeFileURI(uri)
 	bc.mu.Lock()
 	if live {
-		bc.touched[uri] = true
+		if bc.touched != nil {
+			bc.touched[uri] = true
+		}
 	} else if bc.touched[uri] {
 		bc.mu.Unlock()
 		return
@@ -112,6 +126,10 @@ func (bc *brokerConn) replay(snapshot map[string][]types.LSPDiagnostic) {
 	for uri, diags := range snapshot {
 		bc.enqueue(uri, diags, false)
 	}
+	// touched only arbitrates this replay; stop growing it afterwards.
+	bc.mu.Lock()
+	bc.touched = nil
+	bc.mu.Unlock()
 }
 
 // writeLoop drains queued diagnostics onto the socket until close() or a
@@ -141,7 +159,10 @@ func (bc *brokerConn) writeLoop() {
 				continue
 			}
 			if err := bc.write(msg); err != nil {
-				logging.Log(logging.LevelDebug, "broker: failed to forward diagnostics: "+err.Error())
+				// Close so the request side fails too, instead of serving a
+				// client that silently stops receiving diagnostics.
+				logging.Log(logging.LevelWarning, "broker: failed to forward diagnostics, closing connection: "+err.Error())
+				_ = bc.conn.Close()
 				return
 			}
 		}

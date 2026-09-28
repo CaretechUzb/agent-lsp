@@ -154,12 +154,9 @@ type mockSubscriber struct {
 	cb types.DiagnosticUpdateCallback
 }
 
-func (m *mockSubscriber) SubscribeToDiagnostics(cb types.DiagnosticUpdateCallback) {
+func (m *mockSubscriber) SubscribeToDiagnostics(cb types.DiagnosticUpdateCallback) func() {
 	m.cb = cb
-}
-
-func (m *mockSubscriber) UnsubscribeFromDiagnostics(cb types.DiagnosticUpdateCallback) {
-	m.cb = nil
+	return func() { m.cb = nil }
 }
 
 // diagMockSender implements NotificationSender for testing.

@@ -51,6 +51,7 @@ var alwaysAvailableDoctorTools = []string{
 	"execute_command",
 	"set_log_level",
 	"detect_lsp_servers",
+	"get_diagnostics", // pushed publishDiagnostics; mirrors tools.alwaysAvailableTools
 }
 
 // DoctorResult holds the diagnostic result for one language server.
