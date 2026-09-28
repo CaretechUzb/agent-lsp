@@ -2,7 +2,7 @@
 // of a language server process: spawning, JSON-RPC 2.0 framing, request/response
 // correlation via integer IDs, server-initiated request handling, diagnostic
 // caching with subscriber notifications, workspace progress tracking ($/progress),
-// and automatic file watching via fsnotify.
+// and automatic file watching (FSEvents on macOS, fsnotify elsewhere).
 //
 // The client is thread-safe. All public methods may be called concurrently.
 // Internal state is protected by fine-grained mutexes (mu for process state,
@@ -201,7 +201,7 @@ type LSPClient struct {
 	// of file changes automatically, keeping the LSP index fresh.
 	watcherMu     sync.Mutex // guards watcherStop, fileChangeCbs (C2: prevents data race)
 	watcherStop   chan struct{}
-	watcher       *fsnotify.Watcher               // C1: held so addWatcherRoot can Add() new dirs
+	watcher       fileWatcher                     // C1: held so addWatcherRoot can add new roots
 	fileChangeCbs []func([]types.FileChangeEvent) // proactive notification callbacks
 }
 
@@ -2628,9 +2628,9 @@ func watcherDisabled() bool {
 // fsnotify kqueue backend also opens an fd for each file created at runtime in an
 // already-watched directory, which the startup budget cannot see. The guard
 // measures the process's actual open-fd count on a timer and tears the watcher
-// down before fd pressure can approach the per-process limit. FSEvents would
-// avoid per-file fds entirely, but it requires cgo and would break this project's
-// CGO_ENABLED=0 cross-compiled release, so the guard is the pure-Go equivalent.
+// down before fd pressure can approach the per-process limit. On macOS the
+// FSEvents backend (watcher_fsevents_darwin.go) avoids per-file fds entirely;
+// the caps and guard protect the kqueue fallback.
 const (
 	defaultWatchMaxFDs   = 60000            // tear the watcher down above this many process fds
 	watchFDCheckInterval = 30 * time.Second // how often the guard samples the fd count
@@ -2760,7 +2760,7 @@ func (c *LSPClient) startWatcher(rootDir string) {
 				logging.Log(logging.LevelError, fmt.Sprintf("startWatcher panic: %v\n%s", r, debug.Stack()))
 			}
 		}()
-		watcher, err := fsnotify.NewWatcher()
+		watcher, backend, err := newFileWatcher(lim)
 		if err != nil {
 			logging.Log(logging.LevelDebug, "auto-watcher: failed to create watcher: "+err.Error())
 			return
@@ -2776,10 +2776,10 @@ func (c *LSPClient) startWatcher(rootDir string) {
 			c.watcherMu.Unlock()
 		}()
 
-		// Walk the workspace and add all non-excluded directories, bounded so a
-		// large data/cache tree cannot exhaust the fd table on macOS (issue #18).
-		watched := addWatchedTree(watcher, rootDir, lim, 0)
-		logging.Log(logging.LevelDebug, fmt.Sprintf("auto-watcher: watching ~%d entries under %s", watched, rootDir))
+		// Watch the workspace. The kqueue backend walks it bounded so a large
+		// data/cache tree cannot exhaust the fd table on macOS (issue #18).
+		watcher.AddTree(rootDir)
+		logging.Log(logging.LevelDebug, fmt.Sprintf("auto-watcher: %s backend on %s", backend, rootDir))
 
 		// debounce: collect events for 150ms then flush as a batch.
 		const debounce = 150 * time.Millisecond
@@ -2850,7 +2850,7 @@ func (c *LSPClient) startWatcher(rootDir string) {
 					flush()
 					return // deferred watcher.Close() releases the leaked fds
 				}
-			case event, ok := <-watcher.Events:
+			case event, ok := <-watcher.Events():
 				if !ok {
 					return
 				}
@@ -2860,21 +2860,18 @@ func (c *LSPClient) startWatcher(rootDir string) {
 					continue
 				}
 				pending[event.Name] = pending[event.Name] | event.Op
-				// If a new directory was created, add it to the watcher, unless it
-				// is oversized (a runtime-created cache dir would open that many
-				// kqueue fds on macOS, issue #18).
+				// A directory created at runtime must be added explicitly on
+				// non-recursive backends.
 				if event.Op&fsnotify.Create != 0 {
-					if info, err := os.Stat(event.Name); err == nil && info.IsDir() && !watcherSkipDirs[name] {
-						if entries, rerr := os.ReadDir(event.Name); rerr == nil && len(entries) <= lim.maxDirEntries {
-							_ = watcher.Add(event.Name)
-						}
+					if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+						watcher.WatchNewDir(event.Name)
 					}
 				}
 				if timer != nil {
 					timer.Stop()
 				}
 				timer = time.AfterFunc(debounce, flush)
-			case err, ok := <-watcher.Errors:
+			case err, ok := <-watcher.Errors():
 				if !ok {
 					return
 				}
@@ -2911,9 +2908,9 @@ func (c *LSPClient) addWatcherRoot(path string) {
 	if w == nil {
 		return
 	}
-	// Bounded walk so extending coverage to a new workspace folder cannot
-	// exhaust the fd table on macOS (issue #18).
-	addWatchedTree(w, path, loadWatcherLimits(), 0)
+	// The kqueue backend charges the new folder to the same entry budget, so
+	// extending coverage cannot exhaust the fd table on macOS (issue #18).
+	w.AddTree(path)
 }
 
 // GetSemanticTokenLegend returns the token type and modifier name arrays
