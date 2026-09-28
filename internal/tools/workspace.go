@@ -337,8 +337,43 @@ func HandlePrepareRename(ctx context.Context, client *lsp.LSPClient, args map[st
 	if wErr != nil {
 		return types.ErrorResult(fmt.Sprintf("prepare_rename: %s", wErr)), nil
 	}
+	if result == nil {
+		return prepareRenameNilResult(client.GetCapabilities()), nil
+	}
 
 	return EncodeResult(ctx, result)
+}
+
+// renameSupportsPrepare reports whether the server's renameProvider options
+// declare prepareProvider support (map form with prepareProvider: true).
+func renameSupportsPrepare(caps map[string]any) bool {
+	v, ok := caps["renameProvider"]
+	if !ok {
+		return false
+	}
+	opts, ok := v.(map[string]any)
+	if !ok {
+		return false
+	}
+	pp, ok := opts["prepareProvider"].(bool)
+	return ok && pp
+}
+
+// prepareRenameNilResult explains a nil prepareRename result: either the
+// server does not implement textDocument/prepareRename (capability check
+// short-circuits), or it answered null for this position (rename not valid
+// here). (issue #38)
+//
+// Both outcomes are informational, never an ErrorResult: the tool answered
+// honestly, it simply has no range to report.
+func prepareRenameNilResult(caps map[string]any) types.ToolResult {
+	if renameSupportsPrepare(caps) {
+		return appendHint(
+			types.TextResult("The server returned no rename range at this position; a rename here may not be valid."),
+			"Use rename_symbol with dry_run=true to check before applying.",
+		)
+	}
+	return types.TextResult("prepare_rename is not supported by this language server; rename_symbol may still work.")
 }
 
 // HandleFormatDocument formats an entire document.
