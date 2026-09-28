@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/social-preview.png" alt="agent-lsp" width="600">
+  <img src="assets/banner.png" alt="agent-lsp" width="820">
 </p>
 
 <p align="center">
