@@ -1414,6 +1414,23 @@ func (c *LSPClient) GetDiagnostics(uri string) []types.LSPDiagnostic {
 	return out
 }
 
+// HasPublishedDiagnostics reports whether at least one
+// textDocument/publishDiagnostics notification has ever been received for uri.
+//
+// A cached empty diagnostics array still counts as delivered: that is the
+// live-channel-empty case (the server analyzed the document and found nothing).
+// A false result means the diagnostics channel for this document is unverified —
+// agent-lsp does not implement the LSP 3.17 pull model, so an empty result from
+// such a document cannot be distinguished from a server that never published at
+// all. Callers must not present absence of diagnostics as a clean bill of health
+// when this returns false. (issue #44)
+func (c *LSPClient) HasPublishedDiagnostics(uri string) bool {
+	c.diagMu.RLock()
+	defer c.diagMu.RUnlock()
+	_, ok := c.diags[NormalizeFileURI(uri)]
+	return ok
+}
+
 // GetAllDiagnostics returns a copy of all diagnostics.
 func (c *LSPClient) GetAllDiagnostics() map[string][]types.LSPDiagnostic {
 	c.diagMu.RLock()

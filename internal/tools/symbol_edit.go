@@ -15,9 +15,28 @@ import (
 // getDiagnosticsForFile refreshes diagnostics for a file and returns the count
 // of errors (severity==1) and warnings (severity==2). Returns (0, 0) if the
 // client is nil or diagnostics cannot be retrieved.
+//
+// This 2-value wrapper is retained for callers that only need the counts. New
+// code should use getDiagnosticsForFileStatus, which also reports whether the
+// diagnostics channel actually delivered anything (issue #44).
 func getDiagnosticsForFile(ctx context.Context, client *lsp.LSPClient, filePath string) (errors int, warnings int) {
+	errors, warnings, _ = getDiagnosticsForFileStatus(ctx, client, filePath)
+	return errors, warnings
+}
+
+// getDiagnosticsForFileStatus refreshes diagnostics for a file and returns the
+// count of errors (severity==1), warnings (severity==2), and whether the server
+// ever published diagnostics for this document.
+//
+// verified is false when no textDocument/publishDiagnostics notification was
+// ever received for the document, which is indistinguishable from a server that
+// analyzed the file and found nothing: agent-lsp does not implement the LSP 3.17
+// pull model, so a zero count from an unverified document proves nothing.
+// Callers must annotate the result rather than asserting the file is clean. A
+// false result is returned for a nil client. (issue #44)
+func getDiagnosticsForFileStatus(ctx context.Context, client *lsp.LSPClient, filePath string) (errors int, warnings int, verified bool) {
 	if client == nil {
-		return 0, 0
+		return 0, 0, false
 	}
 
 	fileURI := CreateFileURI(filePath)
@@ -38,7 +57,23 @@ func getDiagnosticsForFile(ctx context.Context, client *lsp.LSPClient, filePath 
 			warnings++
 		}
 	}
-	return errors, warnings
+	return errors, warnings, client.HasPublishedDiagnostics(fileURI)
+}
+
+// postEditDiagnosticsHint builds the post-edit verification hint for the edit
+// tools. When the server published diagnostics for the document (verified), the
+// counts are reported plainly. When it did not, the hint is annotated as
+// unverified so the audit record does not assert a verification that never
+// happened: a zero count from a dead channel is not evidence the edit is clean.
+// (issue #44)
+func postEditDiagnosticsHint(errCount, warnCount int, verified bool) string {
+	if verified {
+		return fmt.Sprintf("errors_after: %d, warnings_after: %d. Run get_diagnostics for details.", errCount, warnCount)
+	}
+	return fmt.Sprintf(
+		"errors_after: %d, warnings_after: %d (unverified: the server published no diagnostics for this document — channel may be dead). Run get_diagnostics for details.",
+		errCount, warnCount,
+	)
 }
 
 // SymbolLocation holds the resolved position of a symbol.
@@ -228,8 +263,8 @@ func HandleReplaceSymbolBody(ctx context.Context, client *lsp.LSPClient, args ma
 		return types.ErrorResult(fmt.Sprintf("apply edit: %s", err)), nil
 	}
 
-	errCount, warnCount := getDiagnosticsForFile(ctx, client, loc.FilePath)
-	hint := fmt.Sprintf("errors_after: %d, warnings_after: %d. Run get_diagnostics for details.", errCount, warnCount)
+	errCount, warnCount, verified := getDiagnosticsForFileStatus(ctx, client, loc.FilePath)
+	hint := postEditDiagnosticsHint(errCount, warnCount, verified)
 	return appendHint(types.TextResult(fmt.Sprintf("Replaced body of %q in %s", symbolPath, loc.FilePath)), hint), nil
 }
 
@@ -276,8 +311,8 @@ func HandleInsertAfterSymbol(ctx context.Context, client *lsp.LSPClient, args ma
 		return types.ErrorResult(fmt.Sprintf("apply edit: %s", err)), nil
 	}
 
-	errCount, warnCount := getDiagnosticsForFile(ctx, client, loc.FilePath)
-	hint := fmt.Sprintf("errors_after: %d, warnings_after: %d. Run get_diagnostics for details.", errCount, warnCount)
+	errCount, warnCount, verified := getDiagnosticsForFileStatus(ctx, client, loc.FilePath)
+	hint := postEditDiagnosticsHint(errCount, warnCount, verified)
 	return appendHint(types.TextResult(fmt.Sprintf("Inserted code after %q in %s", symbolPath, loc.FilePath)), hint), nil
 }
 
@@ -324,8 +359,8 @@ func HandleInsertBeforeSymbol(ctx context.Context, client *lsp.LSPClient, args m
 		return types.ErrorResult(fmt.Sprintf("apply edit: %s", err)), nil
 	}
 
-	errCount, warnCount := getDiagnosticsForFile(ctx, client, loc.FilePath)
-	hint := fmt.Sprintf("errors_after: %d, warnings_after: %d. Run get_diagnostics for details.", errCount, warnCount)
+	errCount, warnCount, verified := getDiagnosticsForFileStatus(ctx, client, loc.FilePath)
+	hint := postEditDiagnosticsHint(errCount, warnCount, verified)
 	return appendHint(types.TextResult(fmt.Sprintf("Inserted code before %q in %s", symbolPath, loc.FilePath)), hint), nil
 }
 
@@ -396,7 +431,7 @@ func HandleSafeDeleteSymbol(ctx context.Context, client *lsp.LSPClient, args map
 		return types.ErrorResult(fmt.Sprintf("apply edit: %s", err)), nil
 	}
 
-	errCount, warnCount := getDiagnosticsForFile(ctx, client, loc.FilePath)
-	hint := fmt.Sprintf("errors_after: %d, warnings_after: %d. Run get_diagnostics for details.", errCount, warnCount)
+	errCount, warnCount, verified := getDiagnosticsForFileStatus(ctx, client, loc.FilePath)
+	hint := postEditDiagnosticsHint(errCount, warnCount, verified)
 	return appendHint(types.TextResult(fmt.Sprintf("Deleted symbol %q from %s", symbolPath, loc.FilePath)), hint), nil
 }

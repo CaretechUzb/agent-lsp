@@ -108,10 +108,10 @@ func HandleRenameSymbol(ctx context.Context, client *lsp.LSPClient, args map[str
 		return types.ErrorResult(fmt.Sprintf("rename_symbol: applying edit: %s", err)), nil
 	}
 
-	errCount, warnCount := getDiagnosticsForFile(ctx, client, filePath)
+	errCount, warnCount, verified := getDiagnosticsForFileStatus(ctx, client, filePath)
 	summary := fmt.Sprintf("Renamed to %q across %d location(s) in %d file(s): %s",
 		newName, locations, files, strings.Join(fileNames, ", "))
-	hint := fmt.Sprintf("errors_after: %d, warnings_after: %d. Run get_diagnostics for details.", errCount, warnCount)
+	hint := postEditDiagnosticsHint(errCount, warnCount, verified)
 	return appendHint(types.TextResult(summary), hint), nil
 }
 

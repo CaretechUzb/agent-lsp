@@ -273,6 +273,108 @@ func TestLSPClient_PublishDiagnostics(t *testing.T) {
 	}
 }
 
+// TestLSPClient_HasPublishedDiagnostics_FalseWithoutPublish verifies that a
+// document that never received a publishDiagnostics notification is reported as
+// unverified. (issue #44)
+func TestLSPClient_HasPublishedDiagnostics_FalseWithoutPublish(t *testing.T) {
+	c, _, _ := newTestClient(t)
+
+	if c.HasPublishedDiagnostics("file:///never.go") {
+		t.Error("expected HasPublishedDiagnostics=false before any publish")
+	}
+}
+
+// TestLSPClient_HasPublishedDiagnostics_TrueAfterPublish verifies that receiving
+// a publishDiagnostics notification marks that document as verified while other
+// documents remain unverified. (issue #44)
+func TestLSPClient_HasPublishedDiagnostics_TrueAfterPublish(t *testing.T) {
+	c, serverW, _ := newTestClient(t)
+
+	received := make(chan struct{}, 1)
+	cb := types.DiagnosticUpdateCallback(func(string, []types.LSPDiagnostic) {
+		select {
+		case received <- struct{}{}:
+		default:
+		}
+	})
+	c.SubscribeToDiagnostics(cb)
+	defer c.UnsubscribeFromDiagnostics(cb)
+
+	if err := writeMsg(serverW, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/publishDiagnostics",
+		"params": map[string]any{
+			"uri": "file:///published.go",
+			"diagnostics": []any{
+				map[string]any{
+					"range": map[string]any{
+						"start": map[string]any{"line": 0, "character": 0},
+						"end":   map[string]any{"line": 0, "character": 1},
+					},
+					"severity": 1,
+					"message":  "boom",
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for publishDiagnostics")
+	}
+
+	if !c.HasPublishedDiagnostics("file:///published.go") {
+		t.Error("expected HasPublishedDiagnostics=true after publish")
+	}
+	if c.HasPublishedDiagnostics("file:///other.go") {
+		t.Error("expected HasPublishedDiagnostics=false for a document with no publish")
+	}
+}
+
+// TestLSPClient_HasPublishedDiagnostics_EmptyPublishCounts verifies that a
+// publish carrying an empty diagnostics array still counts as a delivered
+// notification (the live-channel-empty case). (issue #44)
+func TestLSPClient_HasPublishedDiagnostics_EmptyPublishCounts(t *testing.T) {
+	c, serverW, _ := newTestClient(t)
+
+	received := make(chan struct{}, 1)
+	cb := types.DiagnosticUpdateCallback(func(string, []types.LSPDiagnostic) {
+		select {
+		case received <- struct{}{}:
+		default:
+		}
+	})
+	c.SubscribeToDiagnostics(cb)
+	defer c.UnsubscribeFromDiagnostics(cb)
+
+	if err := writeMsg(serverW, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/publishDiagnostics",
+		"params": map[string]any{
+			"uri":         "file:///clean.go",
+			"diagnostics": []any{},
+		},
+	}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for publishDiagnostics")
+	}
+
+	if !c.HasPublishedDiagnostics("file:///clean.go") {
+		t.Error("expected HasPublishedDiagnostics=true for an empty publish")
+	}
+	if len(c.GetDiagnostics("file:///clean.go")) != 0 {
+		t.Error("expected no diagnostics for an empty publish")
+	}
+}
+
 // TestLSPClient_UnsubscribeFromDiagnostics verifies that callbacks can be removed.
 func TestLSPClient_UnsubscribeFromDiagnostics(t *testing.T) {
 	c, serverW, _ := newTestClient(t)

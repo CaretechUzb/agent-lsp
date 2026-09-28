@@ -16,6 +16,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	gcf "github.com/blackwell-systems/agent-lsp/internal/encoding/gcf"
@@ -33,6 +34,9 @@ func HandleGetDiagnostics(ctx context.Context, client *lsp.LSPClient, args map[s
 	filePath, _ := args["file_path"].(string)
 
 	var diagMap map[string][]types.LSPDiagnostic
+	// queriedURIs is the set of documents whose diagnostics channel we must
+	// classify (live vs dead) to decide whether an empty result is trustworthy.
+	var queriedURIs []string
 
 	if filePath != "" {
 		cleanPath, err := ValidateFilePath(filePath, client.RootDir())
@@ -48,6 +52,7 @@ func HandleGetDiagnostics(ctx context.Context, client *lsp.LSPClient, args map[s
 		}
 		diags := client.GetDiagnostics(fileURI)
 		diagMap = map[string][]types.LSPDiagnostic{fileURI: diags}
+		queriedURIs = []string{fileURI}
 	} else {
 		if err := client.ReopenAllDocuments(ctx); err != nil {
 			return types.ErrorResult(fmt.Sprintf("failed to reopen documents: %s", err)), nil
@@ -68,21 +73,10 @@ func HandleGetDiagnostics(ctx context.Context, client *lsp.LSPClient, args map[s
 				diagMap[uri] = diags
 			}
 		}
-	}
-
-	// group_by=symbol: group diagnostics under their owning symbol.
-	groupBy, _ := args["group_by"].(string)
-	if groupBy == "symbol" && filePath != "" {
-		result, gErr := groupDiagnosticsBySymbol(ctx, client, filePath, diagMap)
-		if gErr == nil {
-			hint := "No errors. Safe to proceed."
-			if len(result.Symbols) > 0 || len(result.Ungrouped) > 0 {
-				hint = "Use suggest_fixes at each error location for quick fixes."
-			}
-			encoded, _ := EncodeResult(ctx, result)
-			return appendHint(encoded, hint), nil
-		}
-		// Fall through to ungrouped if symbol grouping fails.
+		// A document that never received a publish is absent from GetOpenDocuments'
+		// diagnostics entirely, so the queried set must be the open documents, not
+		// the (possibly smaller) key set of diagMap.
+		queriedURIs = openURIs
 	}
 
 	hasErrors := false
@@ -92,12 +86,66 @@ func HandleGetDiagnostics(ctx context.Context, client *lsp.LSPClient, args map[s
 			break
 		}
 	}
-	hint := "No errors. Safe to proceed."
-	if hasErrors {
-		hint = "Use suggest_fixes at each error location for quick fixes."
+
+	// group_by=symbol: group diagnostics under their owning symbol.
+	groupBy, _ := args["group_by"].(string)
+	if groupBy == "symbol" && filePath != "" {
+		result, gErr := groupDiagnosticsBySymbol(ctx, client, filePath, diagMap)
+		if gErr == nil {
+			deadURIs, liveCount := classifyDiagnosticsChannel(client, queriedURIs)
+			encoded, _ := EncodeResult(ctx, result)
+			return appendHint(encoded, diagnosticsHint(hasErrors, deadURIs, liveCount)), nil
+		}
+		// Fall through to ungrouped if symbol grouping fails.
 	}
+
+	deadURIs, liveCount := classifyDiagnosticsChannel(client, queriedURIs)
 	encoded, _ := EncodeResult(ctx, diagMap)
-	return appendHint(encoded, hint), nil
+	return appendHint(encoded, diagnosticsHint(hasErrors, deadURIs, liveCount)), nil
+}
+
+// diagnosticsHint builds the next-step hint for a get_diagnostics result.
+//
+// An empty result is ambiguous: the server may have analyzed the document and
+// found nothing (a live, empty publish channel), or it may never have published
+// anything at all (agent-lsp implements neither the LSP 3.17 pull model nor any
+// push fallback). The hint must not claim the file is clean in the second case.
+// deadURIs lists queried documents that have never received a
+// textDocument/publishDiagnostics notification; liveCount is how many queried
+// documents have (a published empty array counts as live). (issue #44)
+func diagnosticsHint(hasErrors bool, deadURIs []string, liveCount int) string {
+	const (
+		fixesHint = "Use suggest_fixes at each error location for quick fixes."
+		safeHint  = "No errors. Safe to proceed."
+	)
+	if hasErrors {
+		return fixesHint
+	}
+	if len(deadURIs) == 0 {
+		// Every queried document has a live channel (or nothing was queried).
+		return safeHint
+	}
+	sorted := append([]string(nil), deadURIs...)
+	sort.Strings(sorted)
+	if liveCount == 0 {
+		return "No diagnostics received — the server has not published any for this document; this does not confirm the file is clean."
+	}
+	return safeHint + " No diagnostics received for: " + strings.Join(sorted, ", ") + " — those files are not confirmed clean."
+}
+
+// classifyDiagnosticsChannel splits queried URIs into those that never received
+// a publishDiagnostics notification (dead) and a count of those that did (live,
+// including a published empty array). A dead channel makes an empty result
+// unverifiable. (issue #44)
+func classifyDiagnosticsChannel(client *lsp.LSPClient, uris []string) (deadURIs []string, liveCount int) {
+	for _, uri := range uris {
+		if client.HasPublishedDiagnostics(uri) {
+			liveCount++
+		} else {
+			deadURIs = append(deadURIs, uri)
+		}
+	}
+	return deadURIs, liveCount
 }
 
 // symbolDiagGroup groups diagnostics under a named symbol.

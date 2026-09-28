@@ -3,6 +3,11 @@
 All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog, Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **`get_diagnostics` no longer calls an unverified empty result "safe to proceed"; edit-tool post-verification marks a dead diagnostics channel `unverified`** ([#44](https://github.com/blackwell-systems/agent-lsp/issues/44)): an empty diagnostics map has two meanings — the server analyzed the document and found nothing, or the server never published any diagnostics at all (agent-lsp implements neither the LSP 3.17 pull model nor a push fallback). A server that declares `diagnosticProvider` but never emits `publishDiagnostics` (observed with mql-lsp-server v2.4.2) fell into the second case, yet the tool returned "No errors. Safe to proceed." and recommended proceeding on files with flagrant syntax errors. The client now records whether *any* `publishDiagnostics` notification was ever received per document (`HasPublishedDiagnostics`; a published empty array counts as delivered, and cached replays through `SubscribeToDiagnostics` are not treated as new publishes). `get_diagnostics` keeps "No errors. Safe to proceed." only when the channel delivered for that document; when nothing was ever published it now says "No diagnostics received — the server has not published any for this document; this does not confirm the file is clean.", and a mixed multi-document query keeps the safe hint for the live files while listing the unconfirmed ones. `rename_symbol`, `replace_symbol_body`, `insert_after_symbol`, `insert_before_symbol`, and `safe_delete_symbol` post-verification now annotates `errors_after`/`warnings_after` with "(unverified: the server published no diagnostics for this document — channel may be dead)" when the channel is dead, so the audit record does not assert a verification that never happened.
+
 ## [0.20.0] - 2026-09-26
 
 ### Added
