@@ -3,6 +3,11 @@
 All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog, Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **`find_references` empty-result hint no longer asserts dead code unconditionally** ([#40](https://github.com/blackwell-systems/agent-lsp/issues/40)): zero references has at least two causes — the symbol is genuinely unreferenced, or the language server could not resolve references for that position (index state, cross-file limitations, servers that only index opened documents). The old hint ("This symbol may be dead code") was a false positive pushing agents toward deleting used code on exactly those servers; it now reads "No references found. This may be dead code, or the language server could not resolve references for this position — use /lsp-dead-code to verify."
+
 ## [0.20.0] - 2026-09-26
 
 ### Added
