@@ -101,26 +101,39 @@ func TestGetDiagnosticsForFileStatus_NilClient(t *testing.T) {
 
 // TestShouldAttemptPull covers the push-first pull decision. A pull is only ever
 // attempted for a document whose push channel is dead on a server that declares
-// diagnosticProvider. (issue #43)
+// diagnosticProvider, while the opt-in gate is open. (issue #43)
 func TestShouldAttemptPull(t *testing.T) {
-	cases := []struct {
-		name        string
-		hasProvider bool
-		pushLive    bool
-		want        bool
-	}{
-		{"provider and dead push", true, false, true},
-		{"provider but live push is never pulled", true, true, false},
-		{"no provider and dead push", false, false, false},
-		{"no provider and live push", false, true, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := shouldAttemptPull(tc.hasProvider, tc.pushLive); got != tc.want {
-				t.Errorf("shouldAttemptPull(%v, %v) = %v, want %v", tc.hasProvider, tc.pushLive, got, tc.want)
-			}
-		})
-	}
+	orig := pullDiagnosticsEnabled
+	t.Cleanup(func() { pullDiagnosticsEnabled = orig })
+
+	t.Run("gate open", func(t *testing.T) {
+		pullDiagnosticsEnabled = func() bool { return true }
+		cases := []struct {
+			name        string
+			hasProvider bool
+			pushLive    bool
+			want        bool
+		}{
+			{"provider and dead push", true, false, true},
+			{"provider but live push is never pulled", true, true, false},
+			{"no provider and dead push", false, false, false},
+			{"no provider and live push", false, true, false},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := shouldAttemptPull(tc.hasProvider, tc.pushLive); got != tc.want {
+					t.Errorf("shouldAttemptPull(%v, %v) = %v, want %v", tc.hasProvider, tc.pushLive, got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("gate closed blocks every pull", func(t *testing.T) {
+		pullDiagnosticsEnabled = func() bool { return false }
+		if shouldAttemptPull(true, false) {
+			t.Error("expected no pull attempt while the opt-in gate is closed")
+		}
+	})
 }
 
 // TestDiagnosticsHint_PullSucceeded verifies that a document verified by a

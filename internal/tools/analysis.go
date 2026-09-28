@@ -23,6 +23,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -104,11 +105,11 @@ func HandleGetDiagnostics(ctx context.Context, client *lsp.LSPClient, args map[s
 	}
 
 	deadURIs, liveCount := classifyDiagnosticsChannel(client, queriedURIs, pulledLive)
-	// A pull was attempted for the dead documents only when the server declares
-	// the capability; if any documents remain dead after that attempt the pull
-	// did not respond, and the hint must say so rather than implying no pull was
-	// tried.
-	pullAttempted := hasProvider && len(deadURIs) > 0
+	// A pull was attempted for the dead documents only when the fallback is
+	// enabled and the server declares the capability; if any documents remain
+	// dead after that attempt the pull did not respond, and the hint must say
+	// so rather than implying no pull was tried.
+	pullAttempted := hasProvider && pullDiagnosticsEnabled() && len(deadURIs) > 0
 
 	// group_by=symbol: group diagnostics under their owning symbol.
 	groupBy, _ := args["group_by"].(string)
@@ -182,13 +183,29 @@ func classifyDiagnosticsChannel(client *lsp.LSPClient, uris []string, pullLive m
 	return deadURIs, liveCount
 }
 
+// pullDiagnosticsEnabled reports whether the pull fallback is enabled. It is
+// OPT-IN via AGENT_LSP_PULL_DIAGNOSTICS (1/true/yes/on) because at least one
+// server's pull method currently hangs AND wedges the server (observed with
+// mql-lsp-server v2.4.2, upstream davalillo/mql-language-server#91): the
+// client-side timeout bounds the wait, but the wedged server then fails every
+// subsequent request in the session. The default can flip to enabled once that
+// upstream fix lands in a pinned release. (issue #43)
+var pullDiagnosticsEnabled = func() bool {
+	switch strings.ToLower(os.Getenv("AGENT_LSP_PULL_DIAGNOSTICS")) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
 // shouldAttemptPull reports whether get_diagnostics should issue a
 // textDocument/diagnostic request for one document. Pull is attempted only
-// when the server declared diagnosticProvider and the push channel for that
-// document is dead: push-first means a document that already received a
-// publishDiagnostics notification is never pulled. (issue #43)
+// when the pull fallback is enabled, the server declared diagnosticProvider,
+// and the push channel for that document is dead: push-first means a document
+// that already received a publishDiagnostics notification is never pulled.
+// (issue #43)
 func shouldAttemptPull(hasProvider, pushLive bool) bool {
-	return hasProvider && !pushLive
+	return hasProvider && !pushLive && pullDiagnosticsEnabled()
 }
 
 // pullDiagnosticsForDeadChannels attempts a single textDocument/diagnostic
