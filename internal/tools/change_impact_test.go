@@ -174,13 +174,151 @@ func TestCollectAllSymbols(t *testing.T) {
 
 	// collectExportedSymbols should only include exported
 	var exported []exportedSymbol
-	collectExportedSymbols(syms, src, "go", &exported, false)
+	collectExportedSymbols(syms, src, "go", &exported, false, 0)
 	if len(exported) != 1 {
 		t.Fatalf("expected 1 exported symbol, got %d", len(exported))
 	}
 	if exported[0].Name != "ExportedFunc" {
 		t.Errorf("expected ExportedFunc, got %s", exported[0].Name)
 	}
+}
+
+// symbolNames extracts the names of collected symbols in walk order.
+func symbolNames(syms []exportedSymbol) []string {
+	names := make([]string, 0, len(syms))
+	for _, s := range syms {
+		names = append(names, s.Name)
+	}
+	return names
+}
+
+// assertSymbolNames fails unless the collected symbols match want exactly, in
+// order. Used by the nested-scope filtering tests below.
+func assertSymbolNames(t *testing.T, got []exportedSymbol, want ...string) {
+	t.Helper()
+	names := symbolNames(got)
+	if len(names) != len(want) {
+		t.Fatalf("collected symbols = %v, want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("collected symbols = %v, want %v", names, want)
+		}
+	}
+}
+
+// TestCollectExportedSymbols_NestedScopeFiltering covers issue #41: Go-centric
+// export semantics plus unconditional recursion turned nested parameters,
+// locals, fields, properties, and enum members into blast-radius targets on
+// servers that report a rich documentSymbol tree (observed with
+// mql-lsp-server v2.4.2). scope=exported must keep only container/callable
+// nested kinds; scope=all must remain unchanged.
+func TestCollectExportedSymbols_NestedScopeFiltering(t *testing.T) {
+	t.Run("mql nested parameters and locals excluded at scope=exported", func(t *testing.T) {
+		funcWithParams := types.DocumentSymbol{
+			Name: "OnTick",
+			Kind: 12, // Function
+			Children: []types.DocumentSymbol{
+				{Name: "symbol", Kind: 13}, // parameter (Variable)
+				{Name: "buffer", Kind: 13}, // local (Variable)
+			},
+		}
+		var exported []exportedSymbol
+		collectExportedSymbols([]types.DocumentSymbol{funcWithParams}, "OnTick.mqh", "mql", &exported, true, 0)
+		assertSymbolNames(t, exported, "OnTick")
+	})
+
+	t.Run("scope=all still reports nested parameters and locals", func(t *testing.T) {
+		funcWithParams := types.DocumentSymbol{
+			Name: "OnTick",
+			Kind: 12,
+			Children: []types.DocumentSymbol{
+				{Name: "symbol", Kind: 13},
+				{Name: "buffer", Kind: 13},
+			},
+		}
+		var all []exportedSymbol
+		collectAllSymbols([]types.DocumentSymbol{funcWithParams}, "OnTick.mqh", "mql", &all, true)
+		assertSymbolNames(t, all, "OnTick", "symbol", "buffer")
+	})
+
+	t.Run("nested class and its method both included at scope=exported", func(t *testing.T) {
+		nestedClass := types.DocumentSymbol{
+			Name: "Order",
+			Kind: 5, // Class
+			Children: []types.DocumentSymbol{
+				{Name: "Send", Kind: 6}, // Method
+			},
+		}
+		var exported []exportedSymbol
+		collectExportedSymbols([]types.DocumentSymbol{nestedClass}, "Order.mqh", "mql", &exported, true, 0)
+		assertSymbolNames(t, exported, "Order", "Send")
+	})
+
+	t.Run("nested free function included at scope=exported", func(t *testing.T) {
+		// Some servers nest callable helpers (e.g. JavaScript/Python inner
+		// functions) inside their enclosing function; kind 12 stays a target.
+		container := types.DocumentSymbol{
+			Name: "Start",
+			Kind: 12, // Function
+			Children: []types.DocumentSymbol{
+				{Name: "helper", Kind: 12}, // nested Function (kept)
+				{Name: "local", Kind: 13},  // Variable (dropped)
+			},
+		}
+		var exported []exportedSymbol
+		collectExportedSymbols([]types.DocumentSymbol{container}, "start.js", "javascript", &exported, true, 0)
+		assertSymbolNames(t, exported, "Start", "helper")
+	})
+
+	t.Run("nested struct field excluded at scope=exported", func(t *testing.T) {
+		structWithField := types.DocumentSymbol{
+			Name: "Hub",
+			Kind: 23, // Struct
+			Children: []types.DocumentSymbol{
+				{Name: "mu", Kind: 8}, // Field
+			},
+		}
+		var exported []exportedSymbol
+		collectExportedSymbols([]types.DocumentSymbol{structWithField}, "hub.go", "go", &exported, true, 0)
+		assertSymbolNames(t, exported, "Hub")
+	})
+
+	t.Run("nested property and enum member excluded at scope=exported", func(t *testing.T) {
+		container := types.DocumentSymbol{
+			Name: "Config",
+			Kind: 5, // Class
+			Children: []types.DocumentSymbol{
+				{Name: "Value", Kind: 7},  // Property
+				{Name: "Red", Kind: 22},   // EnumMember
+				{Name: "method", Kind: 6}, // Method (kept)
+			},
+		}
+		var exported []exportedSymbol
+		collectExportedSymbols([]types.DocumentSymbol{container}, "config.py", "python", &exported, true, 0)
+		assertSymbolNames(t, exported, "Config", "method")
+	})
+
+	t.Run("go nested method receiver strip still applied", func(t *testing.T) {
+		goStruct := types.DocumentSymbol{
+			Name: "Hub",
+			Kind: 23, // Struct
+			Children: []types.DocumentSymbol{
+				{Name: "(*Hub).SetSender", Kind: 6}, // exported method
+				{Name: "(*Hub).reset", Kind: 6},     // unexported method
+			},
+		}
+		var exported []exportedSymbol
+		collectExportedSymbols([]types.DocumentSymbol{goStruct}, "hub.go", "go", &exported, true, 0)
+		assertSymbolNames(t, exported, "Hub", "(*Hub).SetSender")
+	})
+
+	t.Run("top-level variable in non-Go still included", func(t *testing.T) {
+		topVar := types.DocumentSymbol{Name: "GlobalCounter", Kind: 13}
+		var exported []exportedSymbol
+		collectExportedSymbols([]types.DocumentSymbol{topVar}, "config.py", "python", &exported, true, 0)
+		assertSymbolNames(t, exported, "GlobalCounter")
+	})
 }
 
 func TestBuildSyncGuardedSet(t *testing.T) {
