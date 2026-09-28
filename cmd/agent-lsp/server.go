@@ -302,13 +302,21 @@ func getOutputFormat() string {
 func Run(ctx context.Context, resolver lsp.ClientResolver, registry *extensions.ExtensionRegistry, serverPath string, serverArgs []string, httpMode bool, httpPort int, httpToken string, httpListenAddr string, httpNoAuth bool, auditLogPath string) error {
 	cs := &clientState{client: resolver.DefaultClient()}
 	var initMu sync.Mutex
+	notifyHub := setupNotificationHub()
+	defer notifyHub.Close()
 	// clientForFileWithAutoInit extends clientForFile with auto-init behavior.
 	// If the resolver returns no client for filePath, attempt auto-initialization.
 	clientForFileWithAutoInit := func(filePath string) *lsp.LSPClient {
 		if c := clientForFile(resolver, cs, filePath); c != nil {
 			return c
 		}
-		return autoInitClient(ctx, resolver, cs, &initMu, filePath)
+		c := autoInitClient(ctx, resolver, cs, &initMu, filePath)
+		if c != nil {
+			// A root change replaced the servers; the old clients' notifications
+			// stopped with them.
+			wireNotificationsToClient(notifyHub, c)
+		}
+		return c
 	}
 	sessionMgr := session.NewSessionManager(&csResolver{cs: cs, delegate: resolver})
 
@@ -317,9 +325,6 @@ func Run(ctx context.Context, resolver lsp.ClientResolver, registry *extensions.
 		return fmt.Errorf("audit logger: %w", err)
 	}
 	defer auditLogger.Close()
-
-	notifyHub := setupNotificationHub()
-	defer notifyHub.Close()
 
 	outputFormat := getOutputFormat()
 

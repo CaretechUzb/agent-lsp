@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -105,16 +106,35 @@ type testDiagSubscriber struct {
 	cb types.DiagnosticUpdateCallback
 }
 
-func (s *testDiagSubscriber) SubscribeToDiagnostics(cb types.DiagnosticUpdateCallback) {
+func (s *testDiagSubscriber) SubscribeToDiagnostics(cb types.DiagnosticUpdateCallback) func() {
 	s.cb = cb
-}
-
-func (s *testDiagSubscriber) UnsubscribeFromDiagnostics(cb types.DiagnosticUpdateCallback) {
-	s.cb = nil
+	return func() { s.cb = nil }
 }
 
 func (s *testDiagSubscriber) fire(uri string, diags []types.LSPDiagnostic) {
 	if s.cb != nil {
 		s.cb(uri, diags)
+	}
+}
+
+// An intentional Shutdown (a start_lsp restart) must detach the client's
+// health poller; before OnShutdown it reported the stop as a crash 5s later.
+func TestWireNotificationsToClient_ShutdownIsNotACrash(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits one health poll interval")
+	}
+	sender := &mockNotifySender{}
+	hub := notify.NewHub(sender)
+	client := lsp.NewLSPClient("unused", nil)
+	wireNotificationsToClient(hub, client)
+
+	_ = client.Shutdown(context.Background())
+	time.Sleep(5*time.Second + 500*time.Millisecond)
+	hub.Close()
+
+	for _, l := range sender.logs {
+		if strings.Contains(l.message, "crashed") {
+			t.Fatalf("intentional shutdown reported as a crash: %s", l.message)
+		}
 	}
 }

@@ -585,7 +585,7 @@ At steady state, agent-lsp runs the following goroutines per LSP subprocess:
                         │  │  exit-monitor                         │    │
                         │  │    calls rejectPending on crash        │    │
                         │  │                                       │    │
-                        │  │  file watcher (fsnotify)              │    │
+                        │  │  file watcher (FSEvents / fsnotify)   │    │
                         │  │    debounce 150ms → didChangeWatched  │    │
                         │  └───────────────────────────────────────┘    │
                         │                                              │
@@ -1115,7 +1115,12 @@ If the Go handler itself returns a non-nil `error` (third return value from the 
 
 ## File Watcher
 
-When `start_lsp` initializes the LSP client, `startWatcher(rootDir)` is called automatically. A goroutine watches the workspace root recursively using [fsnotify](https://github.com/fsnotify/fsnotify) (a cross-platform Go file-system notification library), which uses the platform-native mechanism (`inotify` on Linux, `kqueue` on BSD/macOS, `FSEvents` on macOS for Go 1.23+). File system events are:
+When `start_lsp` initializes the LSP client, `startWatcher(rootDir)` is called automatically. A goroutine consumes events from a `fileWatcher` backend (`internal/lsp/watcher_backend.go`):
+
+- **macOS:** FSEvents (`watcher_fsevents_darwin.go`), called through [purego](https://github.com/ebitengine/purego) so the release stays `CGO_ENABLED=0`. One stream per root watches the whole tree recursively with no per-file file descriptors.
+- **Elsewhere, or when FSEvents cannot start, or with `AGENT_LSP_WATCH_BACKEND=kqueue`:** [fsnotify](https://github.com/fsnotify/fsnotify) (`inotify` on Linux, `kqueue` on BSD/macOS, `ReadDirectoryChangesW` on Windows). The walk is bounded by `AGENT_LSP_WATCH_MAX_DIR_ENTRIES` / `AGENT_LSP_WATCH_MAX_ENTRIES` because kqueue opens one fd per watched file.
+
+File system events are:
 
 1. Deduplicated per path into a `map[string]fsnotify.Op` (pending set)
 2. Flushed as a single `workspace/didChangeWatchedFiles` notification after a **150ms debounce** (`time.AfterFunc`)
@@ -1127,7 +1132,7 @@ When `start_lsp` initializes the LSP client, `startWatcher(rootDir)` is called a
 .git  node_modules  target  build  dist  vendor  __pycache__  .venv  venv
 ```
 
-All directories whose names start with `.` (except `.` itself) are also skipped. Dynamically-created subdirectories are added to the watcher on the `Create` event.
+All directories whose names start with `.` (except `.` itself) are also skipped. The fsnotify backend skips them during its walk and adds dynamically created subdirectories on the `Create` event; FSEvents is recursive, so it filters events under excluded directories instead.
 
 `stopWatcher()` closes the stop channel, triggering a final flush of any pending events before the goroutine exits. It is called during `Shutdown` and at the beginning of each `startWatcher` call to replace a stale watcher on `start_lsp` reinit.
 

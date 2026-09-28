@@ -21,8 +21,9 @@ type fileWatcher interface {
 	Events() <-chan fsnotify.Event
 	Errors() <-chan error
 	// AddTree starts watching root and everything below it, honoring
-	// watcherSkipDirs and the hidden-dir rule.
-	AddTree(root string)
+	// watcherSkipDirs and the hidden-dir rule. An error means nothing under
+	// root is watched.
+	AddTree(root string) error
 	// WatchNewDir is called for a directory created at runtime. Recursive
 	// backends ignore it; the kqueue backend must add it explicitly.
 	WatchNewDir(path string)
@@ -46,11 +47,19 @@ func newFileWatcher(lim watcherLimits) (fileWatcher, string, error) {
 			logging.Log(logging.LevelWarning, "auto-watcher: FSEvents unavailable, falling back to kqueue: "+err.Error())
 		}
 	}
-	w, err := fsnotify.NewWatcher()
+	w, err := newKqueueWatcher(lim)
 	if err != nil {
 		return nil, "", err
 	}
-	return &kqueueWatcher{w: w, lim: lim}, "fsnotify", nil
+	return w, "fsnotify", nil
+}
+
+func newKqueueWatcher(lim watcherLimits) (fileWatcher, error) {
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, err
+	}
+	return &kqueueWatcher{w: w, lim: lim}, nil
 }
 
 // kqueueWatcher adapts fsnotify.Watcher, which watches single directories, to
@@ -66,11 +75,12 @@ func (k *kqueueWatcher) Events() <-chan fsnotify.Event { return k.w.Events }
 func (k *kqueueWatcher) Errors() <-chan error          { return k.w.Errors }
 func (k *kqueueWatcher) Close() error                  { return k.w.Close() }
 
-func (k *kqueueWatcher) AddTree(root string) {
+func (k *kqueueWatcher) AddTree(root string) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.total = addWatchedTree(k.w, root, k.lim, k.total)
 	logging.Log(logging.LevelDebug, fmt.Sprintf("auto-watcher: watching ~%d entries under %s", k.total, root))
+	return nil
 }
 
 // WatchNewDir adds a runtime-created directory unless it is oversized (a

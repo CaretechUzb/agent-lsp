@@ -131,11 +131,10 @@ func SubscribeDiagnosticChanges(hub *Hub, subscriber DiagnosticSubscriber) func(
 
 	tracker := newDiagChangeTracker(500*time.Millisecond, emit)
 
-	cb := tracker.OnDiagnostic
-	subscriber.SubscribeToDiagnostics(cb)
+	unsubscribe := subscriber.SubscribeToDiagnostics(tracker.OnDiagnostic)
 
 	return func() {
-		subscriber.UnsubscribeFromDiagnostics(cb)
+		unsubscribe()
 		tracker.Stop()
 	}
 }

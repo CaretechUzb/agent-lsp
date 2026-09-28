@@ -120,8 +120,7 @@ func (w *warmupState) waitForDiagnostic(ctx context.Context, client *LSPClient, 
 		}
 	})
 
-	client.SubscribeToDiagnostics(cb)
-	defer client.UnsubscribeFromDiagnostics(cb)
+	defer client.SubscribeToDiagnostics(cb)()
 
 	select {
 	case <-done:

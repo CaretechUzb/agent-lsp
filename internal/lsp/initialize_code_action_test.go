@@ -92,10 +92,17 @@ func TestCodeActionInitializeServer(t *testing.T) {
 		var result any
 		switch request.Method {
 		case "initialize":
+			if os.Getenv("AGENT_LSP_TEST_FAIL_INIT") == "1" {
+				os.Exit(1)
+			}
 			if err := os.WriteFile(capture, request.Params, 0o600); err != nil {
 				os.Exit(1)
 			}
 			result = map[string]any{"capabilities": map[string]any{}}
+			if os.Getenv("AGENT_LSP_TEST_STALL_AFTER_INIT") == "1" {
+				_ = writeMsg(os.Stdout, map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": result})
+				select {} // never read stdin again, like a wedged server
+			}
 		case "shutdown":
 		case "exit":
 			os.Exit(0)

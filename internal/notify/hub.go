@@ -18,8 +18,9 @@ type NotificationSender interface {
 // publish/subscribe (e.g. LSPClient). Used by the diagnostic notification
 // channel to observe language server diagnostics.
 type DiagnosticSubscriber interface {
-	SubscribeToDiagnostics(cb types.DiagnosticUpdateCallback)
-	UnsubscribeFromDiagnostics(cb types.DiagnosticUpdateCallback)
+	// SubscribeToDiagnostics registers cb and returns a func that removes
+	// exactly that registration.
+	SubscribeToDiagnostics(cb types.DiagnosticUpdateCallback) (unsubscribe func())
 }
 
 // Hub coordinates all proactive notification channels.

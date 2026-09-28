@@ -49,6 +49,9 @@ type managedEntry struct {
 type ServerManager struct {
 	mu      sync.RWMutex
 	entries []*managedEntry
+	// startMu serializes StartAll so two restarts cannot interleave their
+	// initialize and swap phases; mu is only held for the swap.
+	startMu sync.Mutex
 }
 
 // NewSingleServerManager wraps a single *LSPClient to satisfy ClientResolver.
@@ -98,49 +101,77 @@ func NewMultiServerManager(entries []config.ServerEntry) *ServerManager {
 // StartAll starts all configured LSP servers with the given root directory.
 // Called from start_lsp tool handler in multi-server mode, or from main
 // after initialization.
+//
+// On a repeated call the new servers are initialized first, without holding
+// m.mu, so tool calls keep using the old ones meanwhile. They are swapped in
+// together only if every server started; the old ones are then shut down. If
+// any server fails, the new ones are shut down and the old set stays in place.
 func (m *ServerManager) StartAll(ctx context.Context, rootDir string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
 
-	var started []*LSPClient
+	type swap struct {
+		e      *managedEntry
+		client *LSPClient
+	}
+	var fresh []swap
+	var initialized []*LSPClient // pre-created single-server clients started in place
+	rollback := func() {
+		for _, s := range fresh {
+			if err := s.client.Shutdown(ctx); err != nil {
+				logging.Log(logging.LevelDebug, fmt.Sprintf("StartAll rollback shutdown: %v", err))
+			}
+		}
+		for _, c := range initialized {
+			if err := c.Shutdown(ctx); err != nil {
+				logging.Log(logging.LevelDebug, fmt.Sprintf("StartAll rollback shutdown: %v", err))
+			}
+		}
+	}
+
 	for _, e := range m.entries {
 		if len(e.command) == 0 {
 			// Single-server mode: the client was pre-created by NewSingleServerManager
 			// with serverPath/serverArgs set. Initialize it in-place.
-			if e.client != nil && !e.client.IsInitialized() {
-				logging.Log(logging.LevelDebug, fmt.Sprintf("ServerManager.StartAll: initializing pre-created client %s", e.client.serverPath))
-				if err := e.client.Initialize(ctx, rootDir); err != nil {
-					for _, c := range started {
-						if shutErr := c.Shutdown(ctx); shutErr != nil {
-							logging.Log(logging.LevelDebug, fmt.Sprintf("StartAll rollback shutdown: %v", shutErr))
-						}
-					}
+			m.mu.RLock()
+			c := e.client
+			m.mu.RUnlock()
+			if c != nil && !c.IsInitialized() {
+				logging.Log(logging.LevelDebug, fmt.Sprintf("ServerManager.StartAll: initializing pre-created client %s", c.serverPath))
+				if err := c.Initialize(ctx, rootDir); err != nil {
+					rollback()
 					return fmt.Errorf("initialize pre-created client: %w", err)
 				}
-				started = append(started, e.client)
+				initialized = append(initialized, c)
 			}
 			continue
-		}
-		// Repeated start_lsp: stop the previous server first, or its process,
-		// pipes and auto-watcher leak with every call.
-		if e.client != nil {
-			if shutErr := e.client.Shutdown(ctx); shutErr != nil {
-				logging.Log(logging.LevelDebug, fmt.Sprintf("StartAll: shutdown previous %s: %v", e.command[0], shutErr))
-			}
-			e.client = nil
 		}
 		client := NewLSPClient(e.command[0], e.command[1:])
 		logging.Log(logging.LevelDebug, fmt.Sprintf("ServerManager.StartAll: starting %s", e.command[0]))
 		if err := client.Initialize(ctx, rootDir); err != nil {
-			for _, c := range started {
-				if shutErr := c.Shutdown(ctx); shutErr != nil {
-					logging.Log(logging.LevelDebug, fmt.Sprintf("StartAll rollback shutdown: %v", shutErr))
-				}
-			}
+			_ = client.Shutdown(ctx) // Initialize may have spawned the process
+			rollback()
 			return fmt.Errorf("initialize server %s: %w", e.command[0], err)
 		}
-		e.client = client
-		started = append(started, client)
+		fresh = append(fresh, swap{e: e, client: client})
+	}
+
+	var old []*LSPClient
+	m.mu.Lock()
+	for _, s := range fresh {
+		if s.e.client != nil {
+			old = append(old, s.e.client)
+		}
+		s.e.client = s.client
+	}
+	m.mu.Unlock()
+
+	// Repeated start_lsp: stop the previous servers, or their processes,
+	// pipes and auto-watchers leak with every call.
+	for _, c := range old {
+		if err := c.Shutdown(ctx); err != nil {
+			logging.Log(logging.LevelDebug, fmt.Sprintf("StartAll: shutdown previous %s: %v", c.serverPath, err))
+		}
 	}
 	return nil
 }
@@ -198,46 +229,63 @@ func (m *ServerManager) AllClients() []*LSPClient {
 // In single-server mode (no command set) the one pre-created client is returned
 // regardless of languageID — there is nothing else to choose from.
 func (m *ServerManager) StartForLanguage(ctx context.Context, rootDir, languageID string) (*LSPClient, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// Serialized with StartAll: both may initialize the same pre-created
+	// client or replace the same entry.
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
 
 	langLower := strings.ToLower(languageID)
 
 	for _, e := range m.entries {
+		m.mu.RLock()
+		current := e.client
+		m.mu.RUnlock()
+
 		// Single-server mode: command is nil; return the pre-created client.
 		if len(e.command) == 0 {
-			if e.client != nil && !e.client.IsInitialized() {
-				if err := e.client.Initialize(ctx, rootDir); err != nil {
+			if current != nil && !current.IsInitialized() {
+				if err := current.Initialize(ctx, rootDir); err != nil {
 					return nil, fmt.Errorf("initialize server: %w", err)
 				}
 			}
-			return e.client, nil
+			return current, nil
 		}
 		// Match by languageID field or by any extension in the set.
 		if strings.ToLower(e.languageID) == langLower || e.extensions[langLower] {
 			// Daemon mode: for languages that need sustained indexing.
 			if NeedsDaemon(langLower) {
 				// Close previous daemon connection (socket only; daemon stays alive).
-				if e.client != nil {
-					_ = e.client.Shutdown(ctx)
+				if current != nil {
+					_ = current.Shutdown(ctx)
 				}
 				client, err := m.startOrConnectDaemon(ctx, rootDir, langLower, e.command)
+				m.mu.Lock()
 				if err != nil {
+					if e.client == current {
+						e.client = nil // its socket is closed
+					}
+					m.mu.Unlock()
 					return nil, err
 				}
 				e.client = client
+				m.mu.Unlock()
 				return client, nil
 			}
 
-			// Direct mode: restart if already running.
-			if e.client != nil {
-				_ = e.client.Shutdown(ctx)
-			}
+			// Direct mode: start the new server first so a failure leaves the
+			// running one in place, then swap and stop the old one.
 			client := NewLSPClient(e.command[0], e.command[1:])
 			if err := client.Initialize(ctx, rootDir); err != nil {
+				_ = client.Shutdown(ctx) // Initialize may have spawned the process
 				return nil, fmt.Errorf("initialize server for %q: %w", languageID, err)
 			}
+			m.mu.Lock()
+			old := e.client
 			e.client = client
+			m.mu.Unlock()
+			if old != nil {
+				_ = old.Shutdown(ctx)
+			}
 			return client, nil
 		}
 	}
@@ -333,6 +381,9 @@ func spawnDaemonProcess(rootDir, languageID string, command []string) error {
 
 // Shutdown gracefully shuts down all managed LSP clients.
 func (m *ServerManager) Shutdown(ctx context.Context) error {
+	// Wait for an in-flight start so its new servers are not left running.
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 

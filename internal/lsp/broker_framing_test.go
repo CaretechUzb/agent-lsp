@@ -165,3 +165,12 @@ func TestReadFramedMessage_LFOnly(t *testing.T) {
 func itoa(n int) string {
 	return fmt.Sprintf("%d", n)
 }
+
+// A negative Content-Length used to panic in make([]byte, n); the recovered
+// panic then skipped the connection's fan-out cleanup.
+func TestReadFramedMessage_NegativeContentLength(t *testing.T) {
+	r := bufio.NewReader(strings.NewReader("Content-Length: -1\r\n\r\n"))
+	if _, err := readFramedMessage(r); err == nil {
+		t.Fatal("expected an error for a negative Content-Length")
+	}
+}
