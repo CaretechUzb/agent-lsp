@@ -1,3 +1,5 @@
+**English** · [简体中文](docs/i18n/README.zh-CN.md) · [Русский](docs/i18n/README.ru.md) · [हिन्दी](docs/i18n/README.hi.md) · [العربية](docs/i18n/README.ar.md)
+
 <p align="center">
   <img src="assets/banner.png" alt="agent-lsp" width="820">
 </p>
