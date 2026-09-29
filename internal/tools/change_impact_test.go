@@ -174,7 +174,7 @@ func TestCollectAllSymbols(t *testing.T) {
 
 	// collectExportedSymbols should only include exported
 	var exported []exportedSymbol
-	collectExportedSymbols(syms, src, "go", &exported, false, 0)
+	collectExportedSymbols(syms, src, "go", &exported, false, 0, 0)
 	if len(exported) != 1 {
 		t.Fatalf("expected 1 exported symbol, got %d", len(exported))
 	}
@@ -224,7 +224,7 @@ func TestCollectExportedSymbols_NestedScopeFiltering(t *testing.T) {
 			},
 		}
 		var exported []exportedSymbol
-		collectExportedSymbols([]types.DocumentSymbol{funcWithParams}, "OnTick.mqh", "mql", &exported, true, 0)
+		collectExportedSymbols([]types.DocumentSymbol{funcWithParams}, "OnTick.mqh", "mql", &exported, true, 0, 0)
 		assertSymbolNames(t, exported, "OnTick")
 	})
 
@@ -243,6 +243,8 @@ func TestCollectExportedSymbols_NestedScopeFiltering(t *testing.T) {
 	})
 
 	t.Run("nested class and its method both included at scope=exported", func(t *testing.T) {
+		// Order is nested inside a namespace container, exercising the Class
+		// kind at nested depth (depth > 0), not just at the top level.
 		nestedClass := types.DocumentSymbol{
 			Name: "Order",
 			Kind: 5, // Class
@@ -250,9 +252,37 @@ func TestCollectExportedSymbols_NestedScopeFiltering(t *testing.T) {
 				{Name: "Send", Kind: 6}, // Method
 			},
 		}
+		container := types.DocumentSymbol{
+			Name:     "Orders",
+			Kind:     3, // Namespace
+			Children: []types.DocumentSymbol{nestedClass},
+		}
 		var exported []exportedSymbol
-		collectExportedSymbols([]types.DocumentSymbol{nestedClass}, "Order.mqh", "mql", &exported, true, 0)
-		assertSymbolNames(t, exported, "Order", "Send")
+		collectExportedSymbols([]types.DocumentSymbol{container}, "Order.mqh", "mql", &exported, true, 0, 0)
+		assertSymbolNames(t, exported, "Orders", "Order", "Send")
+	})
+
+	t.Run("function-local constant excluded, class constant kept at scope=exported", func(t *testing.T) {
+		// A constant declared inside a function is a local implementation
+		// detail and must not become a blast-radius target, while a constant
+		// inside a class body stays targetable. (issue #41 review follow-up)
+		funcWithConstant := types.DocumentSymbol{
+			Name: "Start",
+			Kind: 12, // Function
+			Children: []types.DocumentSymbol{
+				{Name: "MAX_RETRIES", Kind: 14}, // function-local Constant (dropped)
+			},
+		}
+		classWithConstant := types.DocumentSymbol{
+			Name: "Order",
+			Kind: 5, // Class
+			Children: []types.DocumentSymbol{
+				{Name: "DEFAULT_SLIPPAGE", Kind: 14}, // class Constant (kept)
+			},
+		}
+		var exported []exportedSymbol
+		collectExportedSymbols([]types.DocumentSymbol{funcWithConstant, classWithConstant}, "Order.mqh", "mql", &exported, true, 0, 0)
+		assertSymbolNames(t, exported, "Start", "Order", "DEFAULT_SLIPPAGE")
 	})
 
 	t.Run("nested free function included at scope=exported", func(t *testing.T) {
@@ -267,7 +297,7 @@ func TestCollectExportedSymbols_NestedScopeFiltering(t *testing.T) {
 			},
 		}
 		var exported []exportedSymbol
-		collectExportedSymbols([]types.DocumentSymbol{container}, "start.js", "javascript", &exported, true, 0)
+		collectExportedSymbols([]types.DocumentSymbol{container}, "start.js", "javascript", &exported, true, 0, 0)
 		assertSymbolNames(t, exported, "Start", "helper")
 	})
 
@@ -280,7 +310,7 @@ func TestCollectExportedSymbols_NestedScopeFiltering(t *testing.T) {
 			},
 		}
 		var exported []exportedSymbol
-		collectExportedSymbols([]types.DocumentSymbol{structWithField}, "hub.go", "go", &exported, true, 0)
+		collectExportedSymbols([]types.DocumentSymbol{structWithField}, "hub.go", "go", &exported, true, 0, 0)
 		assertSymbolNames(t, exported, "Hub")
 	})
 
@@ -295,7 +325,7 @@ func TestCollectExportedSymbols_NestedScopeFiltering(t *testing.T) {
 			},
 		}
 		var exported []exportedSymbol
-		collectExportedSymbols([]types.DocumentSymbol{container}, "config.py", "python", &exported, true, 0)
+		collectExportedSymbols([]types.DocumentSymbol{container}, "config.py", "python", &exported, true, 0, 0)
 		assertSymbolNames(t, exported, "Config", "method")
 	})
 
@@ -309,14 +339,14 @@ func TestCollectExportedSymbols_NestedScopeFiltering(t *testing.T) {
 			},
 		}
 		var exported []exportedSymbol
-		collectExportedSymbols([]types.DocumentSymbol{goStruct}, "hub.go", "go", &exported, true, 0)
+		collectExportedSymbols([]types.DocumentSymbol{goStruct}, "hub.go", "go", &exported, true, 0, 0)
 		assertSymbolNames(t, exported, "Hub", "(*Hub).SetSender")
 	})
 
 	t.Run("top-level variable in non-Go still included", func(t *testing.T) {
 		topVar := types.DocumentSymbol{Name: "GlobalCounter", Kind: 13}
 		var exported []exportedSymbol
-		collectExportedSymbols([]types.DocumentSymbol{topVar}, "config.py", "python", &exported, true, 0)
+		collectExportedSymbols([]types.DocumentSymbol{topVar}, "config.py", "python", &exported, true, 0, 0)
 		assertSymbolNames(t, exported, "GlobalCounter")
 	})
 }
