@@ -3,6 +3,12 @@
 All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog, Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **Dynamic capability registration no longer overwrites provider options** ([#37](https://github.com/blackwell-systems/agent-lsp/issues/37)): the `client/registerCapability` handler stored every dynamically registered method as a plain `true` boolean, destroying any options object the server had declared in `initialize` — e.g. mql-lsp-server declares `renameProvider: {"prepareProvider": true}` and then registers `textDocument/rename`, after which the stored capability became the bool `true` and `prepare_rename` never sent `textDocument/prepareRename` at all. Registrations now merge `registerOptions` over the existing value (an existing options map is kept when the registration carries no options; an existing bool `true` acts as an empty base for incoming options), and the debug log records whether each registration merged, kept, or set-true.
+- **`prepare_rename` reports unsupported/null outcomes in words instead of empty output** ([#39](https://github.com/blackwell-systems/agent-lsp/issues/39)): when the server does not implement `textDocument/prepareRename` (or its declared support is masked, as in [#37]), the tool returned a single empty text content — rendered "(no tool output)" by clients and indistinguishable from a hang. It now returns "prepare_rename is not supported by this language server; rename_symbol may still work." for the capability gap, and "The server returned no rename range at this position; a rename here may not be valid." (plus a dry-run hint) when the server answered null. Defense in depth: `gcf.Encode(nil)` returns `null` instead of an empty string, so no tool can emit a silent empty content for a nil result.
+
 ## [0.20.0] - 2026-09-26
 
 ### Added

@@ -178,6 +178,114 @@ func TestHandlePrepareRename_MissingPosition(t *testing.T) {
 	}
 }
 
+// --- renameSupportsPrepare / prepareRenameNilResult (issue #38) ---
+
+func TestRenameSupportsPrepare(t *testing.T) {
+	tests := []struct {
+		name string
+		caps map[string]any
+		want bool
+	}{
+		{
+			name: "bool true is not prepare support",
+			caps: map[string]any{"renameProvider": true},
+			want: false,
+		},
+		{
+			name: "map with prepareProvider true",
+			caps: map[string]any{"renameProvider": map[string]any{"prepareProvider": true}},
+			want: true,
+		},
+		{
+			name: "empty options map",
+			caps: map[string]any{"renameProvider": map[string]any{}},
+			want: false,
+		},
+		{
+			name: "nil caps",
+			caps: nil,
+			want: false,
+		},
+		{
+			name: "absent renameProvider",
+			caps: map[string]any{},
+			want: false,
+		},
+		{
+			name: "non-bool prepareProvider junk",
+			caps: map[string]any{"renameProvider": map[string]any{"prepareProvider": "yes"}},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := renameSupportsPrepare(tt.caps); got != tt.want {
+				t.Errorf("renameSupportsPrepare(%v) = %v, want %v", tt.caps, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPrepareRenameNilResult(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("supported server returns informational hint", func(t *testing.T) {
+		caps := map[string]any{"renameProvider": map[string]any{"prepareProvider": true}}
+		r, err := prepareRenameNilResult(ctx, caps)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if r.IsError {
+			t.Error("prepareRenameNilResult must not be an ErrorResult")
+		}
+		if len(r.Content) == 0 || r.Content[0].Text == "" {
+			t.Fatal("expected non-empty first content item")
+		}
+		if len(r.Content) < 2 {
+			t.Fatalf("expected a hint as second content item, got %d items", len(r.Content))
+		}
+		if !strings.HasPrefix(r.Content[1].Text, "Next step: ") {
+			t.Errorf("hint = %q, want prefix 'Next step: '", r.Content[1].Text)
+		}
+	})
+
+	t.Run("unsupported server explains capability gap", func(t *testing.T) {
+		r, err := prepareRenameNilResult(ctx, map[string]any{"renameProvider": true})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if r.IsError {
+			t.Error("prepareRenameNilResult must not be an ErrorResult")
+		}
+		if len(r.Content) == 0 || r.Content[0].Text == "" {
+			t.Fatal("expected non-empty content")
+		}
+		if !strings.Contains(r.Content[0].Text, "not supported") {
+			t.Errorf("text = %q, want mention of 'not supported'", r.Content[0].Text)
+		}
+		if len(r.Content) != 1 {
+			t.Errorf("expected no hint for unsupported server, got %d items", len(r.Content))
+		}
+		if !strings.Contains(r.Content[0].Text, "supported\":false") {
+			t.Errorf("nil-result responses must be encoded through EncodeResult, got %q", r.Content[0].Text)
+		}
+	})
+
+	t.Run("method-not-found error yields the unsupported response", func(t *testing.T) {
+		// A server that advertises prepareProvider but answers the method with
+		// JSON-RPC -32601 must get the unsupported wording, not a tool failure.
+		if !lsp.IsMethodNotFound(&lsp.RPCError{Code: -32601, Message: "method not found"}) {
+			t.Fatal("IsMethodNotFound must recognize -32601")
+		}
+		if lsp.IsMethodNotFound(&lsp.RPCError{Code: -32602, Message: "invalid params"}) {
+			t.Error("IsMethodNotFound must not match other RPC error codes")
+		}
+		if lsp.IsMethodNotFound(context.DeadlineExceeded) {
+			t.Error("IsMethodNotFound must not match non-RPC errors")
+		}
+	})
+}
+
 // --- HandleFormatDocument ---
 
 // TestHandleFormatDocument_NilClient verifies that a nil client returns an error result.
