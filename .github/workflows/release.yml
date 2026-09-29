@@ -286,8 +286,38 @@ jobs:
             fs.writeFileSync('server.json', JSON.stringify(s, null, 2) + '\n');
           "
 
+      # The MCP Registry validates that the npm package version exists, and a
+      # just-published npm version can take minutes to become visible. Publishing
+      # immediately failed with "version ... was not found (status: 404)" on most
+      # releases and needed a manual re-run, so wait for npm to serve it first.
+      - name: Wait for npm to serve this version
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          URL="https://registry.npmjs.org/@blackwell-systems%2Fagent-lsp/${VERSION}"
+          for i in $(seq 1 40); do
+            if curl -fsS -o /dev/null "$URL"; then
+              echo "npm serves @blackwell-systems/agent-lsp@${VERSION}"
+              exit 0
+            fi
+            echo "attempt $i: ${VERSION} not visible on npm yet; retrying in 15s"
+            sleep 15
+          done
+          echo "::error::npm did not serve ${VERSION} within 10 minutes"
+          exit 1
+
       - name: Login to MCP Registry (GitHub OIDC)
         run: mcp-publisher login github-oidc
 
+      # npm can answer our request before the registry's own validator sees the
+      # version (different caches), so retry the publish a few times as well.
       - name: Publish to MCP Registry
-        run: mcp-publisher publish
+        run: |
+          for i in 1 2 3 4 5; do
+            if mcp-publisher publish; then
+              exit 0
+            fi
+            echo "publish attempt $i failed; retrying in 30s"
+            sleep 30
+          done
+          exit 1
