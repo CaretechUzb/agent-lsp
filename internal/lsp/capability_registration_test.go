@@ -70,6 +70,13 @@ func TestMergeRegisteredCapability(t *testing.T) {
 func TestClientRegisterCapability_MergesOptions(t *testing.T) {
 	c, serverW, clientR := newTestClient(t)
 
+	// Seed the capability as mql-lsp-server v2.4.2 declares it in initialize:
+	// renameProvider with prepareProvider. The registration must merge its
+	// options over this map without dropping prepareProvider.
+	c.capsMu.Lock()
+	c.capabilities["renameProvider"] = map[string]any{"prepareProvider": true}
+	c.capsMu.Unlock()
+
 	id := 7
 	if err := writeMsg(serverW, map[string]any{
 		"jsonrpc": "2.0",
@@ -117,5 +124,8 @@ func TestClientRegisterCapability_MergesOptions(t *testing.T) {
 	}
 	if _, ok := capMap["documentSelector"]; !ok {
 		t.Error("documentSelector missing from merged capability")
+	}
+	if capMap["prepareProvider"] != true {
+		t.Errorf("prepareProvider = %v, want true (existing option must survive the merge)", capMap["prepareProvider"])
 	}
 }

@@ -227,9 +227,14 @@ func TestRenameSupportsPrepare(t *testing.T) {
 }
 
 func TestPrepareRenameNilResult(t *testing.T) {
+	ctx := context.Background()
+
 	t.Run("supported server returns informational hint", func(t *testing.T) {
 		caps := map[string]any{"renameProvider": map[string]any{"prepareProvider": true}}
-		r := prepareRenameNilResult(caps)
+		r, err := prepareRenameNilResult(ctx, caps)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		if r.IsError {
 			t.Error("prepareRenameNilResult must not be an ErrorResult")
 		}
@@ -245,7 +250,10 @@ func TestPrepareRenameNilResult(t *testing.T) {
 	})
 
 	t.Run("unsupported server explains capability gap", func(t *testing.T) {
-		r := prepareRenameNilResult(map[string]any{"renameProvider": true})
+		r, err := prepareRenameNilResult(ctx, map[string]any{"renameProvider": true})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		if r.IsError {
 			t.Error("prepareRenameNilResult must not be an ErrorResult")
 		}
@@ -257,6 +265,23 @@ func TestPrepareRenameNilResult(t *testing.T) {
 		}
 		if len(r.Content) != 1 {
 			t.Errorf("expected no hint for unsupported server, got %d items", len(r.Content))
+		}
+		if !strings.Contains(r.Content[0].Text, "supported\":false") {
+			t.Errorf("nil-result responses must be encoded through EncodeResult, got %q", r.Content[0].Text)
+		}
+	})
+
+	t.Run("method-not-found error yields the unsupported response", func(t *testing.T) {
+		// A server that advertises prepareProvider but answers the method with
+		// JSON-RPC -32601 must get the unsupported wording, not a tool failure.
+		if !lsp.IsMethodNotFound(&lsp.RPCError{Code: -32601, Message: "method not found"}) {
+			t.Fatal("IsMethodNotFound must recognize -32601")
+		}
+		if lsp.IsMethodNotFound(&lsp.RPCError{Code: -32602, Message: "invalid params"}) {
+			t.Error("IsMethodNotFound must not match other RPC error codes")
+		}
+		if lsp.IsMethodNotFound(context.DeadlineExceeded) {
+			t.Error("IsMethodNotFound must not match non-RPC errors")
 		}
 	})
 }

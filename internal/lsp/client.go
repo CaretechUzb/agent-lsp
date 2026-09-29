@@ -25,6 +25,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -99,6 +100,29 @@ type jsonrpcMsg struct {
 type jsonrpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+}
+
+// RPCError is a JSON-RPC error response returned by the server for an
+// outstanding request. The Error() text is unchanged from the historical
+// format, but the typed code lets callers distinguish specific server
+// answers (for example a missing method) from transport failures.
+type RPCError struct {
+	Code    int
+	Message string
+}
+
+func (e *RPCError) Error() string {
+	return fmt.Sprintf("lsp error %d: %s", e.Code, e.Message)
+}
+
+// IsMethodNotFound reports whether err is the server's JSON-RPC -32601
+// (method not found) response. A server may advertise a capability in
+// initialize or via client/registerCapability without implementing the
+// corresponding method; callers use this to fall back to an honest
+// "unsupported" answer instead of failing the tool call.
+func IsMethodNotFound(err error) bool {
+	var rpcErr *RPCError
+	return errors.As(err, &rpcErr) && rpcErr.Code == -32601
 }
 
 // pendingRequest holds the reply channel for an outgoing request.
@@ -475,7 +499,7 @@ func (c *LSPClient) dispatch(raw []byte) {
 			c.pendingMu.Unlock()
 			if ok {
 				if msg.Error != nil {
-					req.err <- fmt.Errorf("lsp error %d: %s", msg.Error.Code, msg.Error.Message)
+					req.err <- &RPCError{Code: msg.Error.Code, Message: msg.Error.Message}
 				} else {
 					req.ch <- msg.Result
 				}

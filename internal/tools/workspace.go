@@ -335,10 +335,18 @@ func HandlePrepareRename(ctx context.Context, client *lsp.LSPClient, args map[st
 		return client.PrepareRename(ctx, fileURI, pos)
 	})
 	if wErr != nil {
+		if lsp.IsMethodNotFound(wErr) {
+			// The server advertised prepareProvider (or the capability was
+			// masked by #37) but answers textDocument/prepareRename itself with
+			// JSON-RPC -32601: prepare_rename is genuinely unsupported. Report
+			// that in words instead of failing the call; every other request
+			// error still propagates.
+			return prepareRenameUnsupportedResult(ctx)
+		}
 		return types.ErrorResult(fmt.Sprintf("prepare_rename: %s", wErr)), nil
 	}
 	if result == nil {
-		return prepareRenameNilResult(client.GetCapabilities()), nil
+		return prepareRenameNilResult(ctx, client.GetCapabilities())
 	}
 
 	return EncodeResult(ctx, result)
@@ -359,21 +367,40 @@ func renameSupportsPrepare(caps map[string]any) bool {
 	return ok && pp
 }
 
+// prepareRenameUnsupportedResult explains that the server does not implement
+// textDocument/prepareRename at all: either it never declared prepareProvider,
+// its declared support is masked (issue #37), or the method itself answers
+// JSON-RPC -32601 despite the advertisement.
+func prepareRenameUnsupportedResult(ctx context.Context) (types.ToolResult, error) {
+	encoded, err := EncodeResult(ctx, map[string]any{
+		"supported": false,
+		"message":   "prepare_rename is not supported by this language server; rename_symbol may still work.",
+	})
+	if err != nil {
+		return types.ErrorResult(err.Error()), nil
+	}
+	return encoded, nil
+}
+
 // prepareRenameNilResult explains a nil prepareRename result: either the
 // server does not implement textDocument/prepareRename (capability check
 // short-circuits), or it answered null for this position (rename not valid
-// here). (issue #38)
+// here). (issue #39)
 //
 // Both outcomes are informational, never an ErrorResult: the tool answered
 // honestly, it simply has no range to report.
-func prepareRenameNilResult(caps map[string]any) types.ToolResult {
+func prepareRenameNilResult(ctx context.Context, caps map[string]any) (types.ToolResult, error) {
 	if renameSupportsPrepare(caps) {
-		return appendHint(
-			types.TextResult("The server returned no rename range at this position; a rename here may not be valid."),
-			"Use rename_symbol with dry_run=true to check before applying.",
-		)
+		encoded, err := EncodeResult(ctx, map[string]any{
+			"supported": true,
+			"message":   "The server returned no rename range at this position; a rename here may not be valid.",
+		})
+		if err != nil {
+			return types.ErrorResult(err.Error()), nil
+		}
+		return appendHint(encoded, "Use rename_symbol with dry_run=true to check before applying."), nil
 	}
-	return types.TextResult("prepare_rename is not supported by this language server; rename_symbol may still work.")
+	return prepareRenameUnsupportedResult(ctx)
 }
 
 // HandleFormatDocument formats an entire document.
