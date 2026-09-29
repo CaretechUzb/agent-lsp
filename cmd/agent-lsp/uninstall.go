@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,12 +13,42 @@ import (
 
 // runUninstall is the entry point for `agent-lsp uninstall`.
 // It removes all agent-lsp configs, skills, and caches.
-func runUninstall(args []string) {
-	dryRun := false
+const uninstallUsage = `Usage: agent-lsp uninstall [--dry-run]
+
+Remove agent-lsp's entries from AI tool MCP configs, the skills it installed,
+its managed rules sections, and its caches. The binary itself is not removed.
+
+Options:
+  --dry-run    show what would be removed without changing anything
+  -h, --help   show this help and exit without changing anything
+`
+
+// parseUninstallArgs parses uninstall's arguments. Unknown arguments are an
+// error rather than ignored: uninstall deletes files, and "uninstall --help"
+// used to fall through and perform a real uninstall.
+func parseUninstallArgs(args []string) (dryRun bool, err error) {
 	for _, a := range args {
-		if a == "--dry-run" {
+		switch a {
+		case "--dry-run":
 			dryRun = true
+		case "-h", "--help", "help":
+			return false, errHelpRequested
+		default:
+			return false, fmt.Errorf("unknown argument %q", a)
 		}
+	}
+	return dryRun, nil
+}
+
+func runUninstall(args []string) {
+	dryRun, err := parseUninstallArgs(args)
+	if errors.Is(err, errHelpRequested) {
+		fmt.Print(uninstallUsage)
+		return
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agent-lsp uninstall: %v\n\n%s", err, uninstallUsage)
+		os.Exit(2)
 	}
 
 	removed := 0
@@ -65,11 +96,7 @@ func runUninstall(args []string) {
 	}
 
 	// Step 3: Managed rules-section cleanup (Claude Code and Pi context files).
-	rulesPaths := []string{
-		filepath.Join(homeDir, ".claude", "CLAUDE.md"),
-		filepath.Join(cwd, "AGENTS.md"),
-		filepath.Join(homeDir, ".pi", "agent", "AGENTS.md"),
-	}
+	rulesPaths := managedRulesPaths()
 	for _, p := range rulesPaths {
 		r, s := cleanManagedSection(p, dryRun)
 		removed += r
@@ -210,6 +237,24 @@ func cleanSkillDirs(skillsDir string, dryRun bool) (int, int) {
 		return 0, 1
 	}
 	return removedCount, 0
+}
+
+// managedRulesPaths lists every rules file init can write a managed section to.
+// It is derived from init's own resolveRulesPath so the two cannot drift: a
+// hand-maintained list here covered only 3 of the 8 files init writes, leaving
+// the managed section behind in CLAUDE.md, GEMINI.md, .clinerules,
+// .windsurfrules, and .cursor/rules/agent-lsp.mdc. Choices resolveRulesPath
+// does not know return "", so scanning past the current menu is harmless.
+func managedRulesPaths() []string {
+	seen := make(map[string]bool)
+	var paths []string
+	for choice := 1; choice <= 64; choice++ {
+		if p := resolveRulesPath(choice); p != "" && !seen[p] {
+			seen[p] = true
+			paths = append(paths, p)
+		}
+	}
+	return paths
 }
 
 // managedSentinels lists the sentinel pairs used by managed sections written by

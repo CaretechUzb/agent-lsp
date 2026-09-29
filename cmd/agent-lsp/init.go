@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,17 +27,60 @@ type mcpServerEntry struct {
 // runInit is the entry point for `agent-lsp init`.
 // args is os.Args[2:] (all args after "init").
 // Does not return — uses os.Exit for fatal conditions.
-func runInit(args []string) {
-	nonInteractive := false
-	withSkills := false
+// errHelpRequested reports that a subcommand was asked for its usage. Callers
+// print the usage and exit without doing any work.
+var errHelpRequested = errors.New("help requested")
+
+const initUsage = `Usage: agent-lsp init [--non-interactive] [--with-skills]
+
+Detect installed language servers, write the MCP config for the chosen AI tool,
+and add skill awareness rules to that tool's rules file.
+
+Options:
+  --non-interactive   use all detected servers and configure Claude Code for the
+                      current directory (.mcp.json) without prompting
+  --with-skills       also install the bundled skills for the chosen tool
+  -h, --help          show this help and exit without changing anything
+`
+
+type initOptions struct {
+	nonInteractive bool
+	withSkills     bool
+}
+
+// parseInitArgs parses init's arguments. Unknown arguments are an error rather
+// than ignored: init writes to the user's config files, so a mistyped or
+// unsupported flag (including --help, before it was handled) must never fall
+// through to a real run.
+func parseInitArgs(args []string) (initOptions, error) {
+	var o initOptions
 	for _, a := range args {
 		switch a {
 		case "--non-interactive":
-			nonInteractive = true
+			o.nonInteractive = true
 		case "--with-skills":
-			withSkills = true
+			o.withSkills = true
+		case "-h", "--help", "help":
+			return o, errHelpRequested
+		default:
+			return o, fmt.Errorf("unknown argument %q", a)
 		}
 	}
+	return o, nil
+}
+
+func runInit(args []string) {
+	opts, err := parseInitArgs(args)
+	if errors.Is(err, errHelpRequested) {
+		fmt.Print(initUsage)
+		return
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agent-lsp init: %v\n\n%s", err, initUsage)
+		os.Exit(2)
+	}
+	nonInteractive := opts.nonInteractive
+	withSkills := opts.withSkills
 
 	// Step 2: Detect installed language servers.
 	cfg, err := config.AutodetectServers()
