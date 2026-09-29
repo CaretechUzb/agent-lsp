@@ -156,11 +156,19 @@ type LSPClient struct {
 	frameReader *FrameReader
 	nextID      atomic.Int64
 
+	// procDone is closed by the current subprocess's exit monitor once that
+	// process has exited and the monitor has finished updating client state.
+	// It is the only way to wait for the process: the monitor is the sole
+	// caller of cmd.Wait (exec.Cmd.Wait must not be called concurrently).
+	// Guarded by c.mu; replaced on every start().
+	procDone chan struct{}
+
 	initialized bool
 
 	// exited is set to true by the process-exit monitor goroutine once the
 	// subprocess has exited. Guarded by c.mu. Distinguishes an exited client
 	// (stdin nulled because the process died) from one that was never started.
+	// Reset by start() so a restarted client does not inherit it.
 	exited bool
 
 	// daemon mode fields
@@ -304,7 +312,7 @@ func NewDaemonClient(info *DaemonInfo) (*LSPClient, error) {
 	}
 
 	// Start reading responses from the socket.
-	go c.readLoop()
+	go c.readLoop(c.frameReader)
 
 	return c, nil
 }
@@ -335,7 +343,7 @@ func NewPassiveClient(addr string) (*LSPClient, error) {
 	c.nextID.Store(0)
 	c.progressCond = sync.NewCond(&c.progressMu)
 
-	go c.readLoop()
+	go c.readLoop(c.frameReader)
 
 	return c, nil
 }
@@ -404,29 +412,49 @@ func (c *LSPClient) start() error {
 
 	logging.Log(logging.LevelInfo, fmt.Sprintf("LSP server started: %s (PID %d)", c.serverPath, cmd.Process.Pid))
 
+	fr := NewFrameReader(stdout)
+	done := make(chan struct{})
+	c.mu.Lock()
 	c.cmd = cmd
 	c.stdin = stdin
-	c.frameReader = NewFrameReader(stdout)
+	c.frameReader = fr
+	c.procDone = done
+	c.exited = false
+	c.mu.Unlock()
 
 	go c.drainStderr(stderr)
-	go c.readLoop()
+	go c.readLoop(fr)
 
-	// Monitor process exit.
+	// Monitor process exit. This goroutine belongs to this process only: after
+	// a Restart the client fields describe a newer process, and touching them
+	// here cut the new server's stdin and rejected its pending initialize
+	// request ("lsp process exited"), which made restart_lsp_server flaky.
 	startTime := time.Now()
 	go func() {
+		// Close done last, after any state update, so Shutdown (and therefore
+		// Restart) cannot start a new process while this goroutine still runs.
+		defer close(done)
 		err := cmd.Wait()
 		uptime := time.Since(startTime).Round(time.Second)
-		exitErr := fmt.Errorf("lsp process exited: %w", err)
-		c.rejectPending(exitErr)
+		exitErr := errors.New("lsp process exited")
+		if err != nil {
+			exitErr = fmt.Errorf("lsp process exited: %w", err)
+		}
 		c.mu.Lock()
-		c.initialized = false
-		c.exited = true
-		// Null out stdin so later writeRaw calls return a clear "process has
-		// exited" error instead of writing to a closed pipe. Do not Close it
-		// here: the process already exited (pipe is closed) and Shutdown may
-		// also close it, so nulling the reference avoids a double-close race.
-		c.stdin = nil
+		current := c.cmd == cmd
+		if current {
+			c.initialized = false
+			c.exited = true
+			// Null out stdin so later writeRaw calls return a clear "process has
+			// exited" error instead of writing to a closed pipe. Do not Close it
+			// here: the process already exited (pipe is closed) and Shutdown may
+			// also close it, so nulling the reference avoids a double-close race.
+			c.stdin = nil
+		}
 		c.mu.Unlock()
+		if current {
+			c.rejectPending(exitErr)
+		}
 		if err != nil {
 			c.stderrMu.Lock()
 			buf := string(c.stderrBuf)
@@ -461,19 +489,29 @@ func (c *LSPClient) drainStderr(r io.Reader) {
 }
 
 // readLoop reads and dispatches all incoming messages.
-func (c *LSPClient) readLoop() {
+func (c *LSPClient) readLoop(fr *FrameReader) {
 	defer func() {
 		if r := recover(); r != nil {
 			logging.Log(logging.LevelError, fmt.Sprintf("readLoop panic: %v\n%s", r, debug.Stack()))
 		}
 	}()
+	// fr is this loop's own reader. Re-reading c.frameReader on each iteration
+	// let a previous process's loop switch to a restarted server's reader and
+	// consume its messages concurrently with the new loop (FrameReader is not
+	// safe for concurrent use), so responses went missing and requests timed out.
 	for {
-		raw, err := c.frameReader.ReadMessage()
+		raw, err := fr.ReadMessage()
 		if err != nil {
 			if err != io.EOF {
 				logging.Log(logging.LevelDebug, "LSP read loop ended: "+err.Error())
 			}
 			return
+		}
+		c.mu.Lock()
+		current := c.frameReader == fr
+		c.mu.Unlock()
+		if !current {
+			return // a restart replaced this connection; drop its late messages
 		}
 		c.dispatch(raw)
 	}
@@ -1271,24 +1309,38 @@ func (c *LSPClient) Shutdown(ctx context.Context) error {
 		c.stdin = nil
 	}
 	cmd := c.cmd
+	done := c.procDone
 	c.mu.Unlock()
 
-	// Wait for the process to exit, force-kill if it takes too long.
-	if cmd != nil && cmd.Process != nil {
-		done := make(chan struct{})
-		go func() {
-			cmd.Wait()
-			close(done)
-		}()
+	// Wait for the process to exit, force-kill if it takes too long. Waiting on
+	// done (closed by the exit monitor) instead of calling cmd.Wait again avoids
+	// concurrent Wait calls, and it also waits for the monitor to finish, so a
+	// Restart never starts the next process while the old monitor still runs.
+	if cmd != nil && cmd.Process != nil && done != nil {
 		select {
 		case <-done:
 			// Process exited cleanly.
 		case <-time.After(3 * time.Second):
 			logging.Log(logging.LevelWarning, fmt.Sprintf("LSP server %s (PID %d) did not exit after 3s, killing", c.serverPath, cmd.Process.Pid))
 			cmd.Process.Kill()
+			waitProcDone(done)
 		}
 	}
 	return nil
+}
+
+// waitProcDone waits a bounded time for an exit monitor to finish after the
+// process was killed. Kill only sends the signal; returning before the process
+// is reaped would let a Restart overlap the old process's exit handling.
+func waitProcDone(done chan struct{}) {
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		logging.Log(logging.LevelWarning, "LSP server did not exit within 5s of being killed")
+	}
 }
 
 // killProcess force-kills the subprocess if it's still running.
@@ -1300,9 +1352,11 @@ func (c *LSPClient) killProcess() {
 		c.stdin = nil
 	}
 	cmd := c.cmd
+	done := c.procDone
 	c.mu.Unlock()
 	if cmd != nil && cmd.Process != nil {
 		cmd.Process.Kill()
+		waitProcDone(done)
 	}
 }
 
