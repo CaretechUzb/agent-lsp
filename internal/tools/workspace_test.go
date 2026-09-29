@@ -2,11 +2,15 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/blackwell-systems/agent-lsp/internal/lsp"
 )
@@ -782,5 +786,108 @@ func TestWorkspaceEditURIs(t *testing.T) {
 
 	if got := workspaceEditURIs(map[string]any{}); len(got) != 0 {
 		t.Errorf("workspaceEditURIs(empty) = %v, want none", got)
+	}
+}
+
+// TestEditedURIsToVerify_SkipsRequestedAndOutOfRootURIs verifies that rename's
+// multi-file channel check never reopens the requested file (the caller already
+// verified it) or a URI outside the workspace root. ReopenDocument reads an
+// untracked URI from disk and sends it to the server, and the ignored form of
+// the edit (changes when documentChanges is present) is never validated by
+// ApplyWorkspaceEdit.
+func TestEditedURIsToVerify_SkipsRequestedAndOutOfRootURIs(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	requested := filepath.Join(root, "main.go")
+	sibling := filepath.Join(root, "pkg", "util.go")
+
+	edit := map[string]any{
+		"changes": map[string]any{
+			CreateFileURI(requested): []any{},
+			CreateFileURI(sibling):   []any{},
+			CreateFileURI(outside):   []any{},
+		},
+	}
+	got := editedURIsToVerify(edit, requested, root)
+	want := []string{CreateFileURI(sibling)}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("editedURIsToVerify = %v, want %v", got, want)
+	}
+}
+
+// TestVerifyWorkspaceEditChannels_SharesOneWait verifies that a dead
+// diagnostics channel costs one bounded wait for the whole rename, not one wait
+// per edited file.
+func TestVerifyWorkspaceEditChannels_SharesOneWait(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	// A server whose diagnostics channel is dead: it answers requests with null
+	// and never sends textDocument/publishDiagnostics.
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		r := lsp.NewFrameReader(conn)
+		for {
+			raw, err := r.ReadMessage()
+			if err != nil {
+				return
+			}
+			var msg struct {
+				ID     *float64 `json:"id"`
+				Method string   `json:"method"`
+			}
+			if json.Unmarshal(raw, &msg) != nil {
+				return
+			}
+			if msg.ID == nil || msg.Method == "" {
+				continue
+			}
+			body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": *msg.ID, "result": nil})
+			if _, err := conn.Write(lsp.EncodeMessage(body)); err != nil {
+				return
+			}
+		}
+	}()
+
+	client, err := lsp.NewPassiveClient(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("NewPassiveClient: %v", err)
+	}
+	defer client.Shutdown(context.Background())
+	root := t.TempDir()
+	client.MarkInitializedForTest()
+	client.SetRootDirForTest(root)
+
+	const files = 5
+	changes := map[string]any{}
+	for i := 0; i < files; i++ {
+		p := filepath.Join(root, fmt.Sprintf("f%d.go", i))
+		if err := os.WriteFile(p, []byte("package p\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		changes[CreateFileURI(p)] = []any{}
+	}
+
+	saved := editChannelWaitMs
+	editChannelWaitMs = 300
+	defer func() { editChannelWaitMs = saved }()
+
+	start := time.Now()
+	unverified := verifyWorkspaceEditChannels(context.Background(), client,
+		map[string]any{"changes": changes}, filepath.Join(root, "requested.go"))
+	elapsed := time.Since(start)
+
+	if len(unverified) != files {
+		t.Errorf("unverified = %d files, want %d (dead channel)", len(unverified), files)
+	}
+	// One shared wait is ~300ms; waiting per file would take at least 1500ms.
+	if elapsed > time.Second {
+		t.Errorf("verification took %v for %d files; the wait must be shared, not per file", elapsed, files)
 	}
 }

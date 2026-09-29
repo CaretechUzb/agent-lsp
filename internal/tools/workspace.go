@@ -129,25 +129,61 @@ func HandleRenameSymbol(ctx context.Context, client *lsp.LSPClient, args map[str
 // reports the URIs whose channel still published nothing. A rename result must
 // not read as verified when only the requested file's channel answered.
 // (issue #44 review follow-up)
+//
+// All documents are reopened first and then share one wait, so a dead channel
+// costs a single editChannelWaitMs regardless of how many files the rename
+// touched (waiting per file made a 50-file rename against a server that never
+// publishes block for minutes).
 func verifyWorkspaceEditChannels(ctx context.Context, client *lsp.LSPClient, edit any, requestedFilePath string) []string {
-	uris := workspaceEditURIs(edit)
-	if len(uris) == 0 || client == nil {
+	if client == nil {
 		return nil
 	}
-	requestedURI := lsp.NormalizeFileURI(CreateFileURI(requestedFilePath))
-	var unverified []string
+	uris := editedURIsToVerify(edit, requestedFilePath, client.RootDir())
+	if len(uris) == 0 {
+		return nil
+	}
 	for _, uri := range uris {
-		if lsp.NormalizeFileURI(uri) == requestedURI {
-			continue
-		}
 		client.ResetDiagnostics(uri)
 		_ = client.ReopenDocument(ctx, uri)
-		_ = lsp.WaitForDiagnostics(ctx, client, []string{uri}, 5000)
+	}
+	_ = lsp.WaitForDiagnostics(ctx, client, uris, editChannelWaitMs)
+	var unverified []string
+	for _, uri := range uris {
 		if !client.HasPublishedDiagnostics(uri) {
 			unverified = append(unverified, uri)
 		}
 	}
 	return unverified
+}
+
+// editChannelWaitMs bounds the single shared wait in verifyWorkspaceEditChannels.
+// A variable so tests can shorten it.
+var editChannelWaitMs = 5000
+
+// editedURIsToVerify returns the edited document URIs whose diagnostics channel
+// verifyWorkspaceEditChannels should re-check: every URI in the edit except the
+// requested file (already verified by the caller), limited to paths inside the
+// workspace root. The URIs come from the language server's edit, and
+// ApplyWorkspaceEdit validates only the form it applies (documentChanges wins
+// over changes), so an out-of-root URI in the ignored form must not reach
+// ReopenDocument, which would read it from disk and send it to the server.
+func editedURIsToVerify(edit any, requestedFilePath, rootDir string) []string {
+	requestedURI := lsp.NormalizeFileURI(CreateFileURI(requestedFilePath))
+	var out []string
+	for _, uri := range workspaceEditURIs(edit) {
+		if lsp.NormalizeFileURI(uri) == requestedURI {
+			continue
+		}
+		path, err := URIToFilePath(uri)
+		if err != nil {
+			continue
+		}
+		if _, err := ValidateFilePath(path, rootDir); err != nil {
+			continue
+		}
+		out = append(out, uri)
+	}
+	return out
 }
 
 // workspaceEditURIs lists the document URIs a WorkspaceEdit touches, handling
