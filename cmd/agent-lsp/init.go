@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/blackwell-systems/agent-lsp/internal/config"
+	"github.com/blackwell-systems/agent-lsp/skills"
 )
 
 type mcpConfig struct {
@@ -27,9 +28,13 @@ type mcpServerEntry struct {
 // Does not return — uses os.Exit for fatal conditions.
 func runInit(args []string) {
 	nonInteractive := false
+	withSkills := false
 	for _, a := range args {
-		if a == "--non-interactive" {
+		switch a {
+		case "--non-interactive":
 			nonInteractive = true
+		case "--with-skills":
+			withSkills = true
 		}
 	}
 
@@ -42,6 +47,10 @@ func runInit(args []string) {
 		os.Exit(1)
 	}
 
+	// Single shared stdin reader for all prompts. Creating a new reader per
+	// prompt loses buffered input when stdin is piped or scripted.
+	reader := bufio.NewReader(os.Stdin)
+
 	// Step 3: Present servers and ask which to include.
 	selected := cfg.Servers
 	if !nonInteractive {
@@ -49,7 +58,6 @@ func runInit(args []string) {
 		for i, entry := range cfg.Servers {
 			fmt.Printf("  %d. %-12s %s\n", i+1, entry.LanguageID, filepath.Base(entry.Command[0]))
 		}
-		reader := bufio.NewReader(os.Stdin)
 		fmt.Print("Include all detected servers? [Y/n]: ")
 		answer, _ := reader.ReadString('\n')
 		answer = strings.TrimSpace(answer)
@@ -84,15 +92,22 @@ func runInit(args []string) {
 		fmt.Println("  6. Windsurf     (~/.codeium/windsurf/mcp_config.json)")
 		fmt.Println("  7. Gemini CLI   (project .gemini/settings.json in current directory)")
 		fmt.Println("  8. Custom path")
-		reader := bufio.NewReader(os.Stdin)
-		fmt.Print("Choice [1-8]: ")
+		fmt.Println("  9. Pi           (project .mcp.json in current directory)")
+		fmt.Println(" 10. Pi           (global ~/.config/mcp/mcp.json)")
+		fmt.Print("Choice [1-10]: ")
 		line, _ := reader.ReadString('\n')
 		line = strings.TrimSpace(line)
 		n := 0
 		if len(line) == 1 && line[0] >= '1' && line[0] <= '8' {
 			n = int(line[0] - '0')
 		}
-		if n >= 1 && n <= 8 {
+		if line == "9" {
+			n = 9
+		}
+		if line == "10" {
+			n = 10
+		}
+		if n >= 1 && n <= 10 {
 			choice = n
 		}
 		if choice == 8 {
@@ -122,7 +137,7 @@ func runInit(args []string) {
 	rulesPath := resolveRulesPath(choice)
 	if rulesPath != "" {
 		isClaudeCode := choice == 1 || choice == 2
-		rulesContent := generateRulesContent(isClaudeCode)
+		rulesContent := generateRulesContent(selectRulesTarget(isClaudeCode, isPiChoice(choice)))
 		if isClaudeCode {
 			// Claude Code: inject managed section into CLAUDE.md.
 			if err := writeManagedSection(rulesPath, rulesContent); err != nil {
@@ -140,7 +155,23 @@ func runInit(args []string) {
 		}
 	}
 
-	// Step 9: Print result and next step.
+	// Step 9: Install embedded skills when requested.
+	if withSkills {
+		skillsDest := resolveSkillsDest(choice)
+		if skillsDest == "" {
+			fmt.Println("--with-skills: no known skills directory for this target; install manually with skills/install.sh --dest")
+		} else {
+			n, err := skills.Install(skillsDest)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not install skills to %s: %v\n", skillsDest, err)
+			} else {
+				fmt.Printf("Installed %d skills to: %s\n", n, skillsDest)
+			}
+		}
+	}
+
+	// Step 10: Print result and next step.
+	isPi := isPiChoice(choice)
 	data, err := os.ReadFile(targetPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading written config: %v\n", err)
@@ -149,6 +180,10 @@ func runInit(args []string) {
 	fmt.Printf("Wrote MCP config to: %s\n\n", targetPath)
 	fmt.Println("Config written:")
 	fmt.Println(string(data))
+	if isPi {
+		fmt.Println("Pi loads MCP servers through the pi-mcp-adapter package.")
+		fmt.Println("If it is not installed yet, run: pi install npm:pi-mcp-adapter")
+	}
 	fmt.Println("Next: restart your AI tool to pick up the new MCP server.")
 }
 
@@ -185,6 +220,10 @@ func resolveTargetPath(choice int, customPath string) (string, error) {
 		return filepath.Join(homeDir, ".codeium", "windsurf", "mcp_config.json"), nil
 	case 7:
 		return filepath.Join(cwd, ".gemini", "settings.json"), nil
+	case 9:
+		return filepath.Join(cwd, ".mcp.json"), nil
+	case 10:
+		return filepath.Join(homeDir, ".config", "mcp", "mcp.json"), nil
 	case 8:
 		if strings.HasPrefix(customPath, "~/") {
 			customPath = homeDir + "/" + customPath[2:]
@@ -283,16 +322,80 @@ func resolveRulesPath(choice int) string {
 		return filepath.Join(homeDir, ".windsurfrules")
 	case 7:
 		return filepath.Join(cwd, "GEMINI.md")
+	case 9:
+		// Pi project context file: AGENTS.md (CLAUDE.md is the fallback Pi accepts).
+		return filepath.Join(cwd, "AGENTS.md")
+	case 10:
+		// Pi user instructions: agent-directory AGENTS.md.
+		return filepath.Join(homeDir, ".pi", "agent", "AGENTS.md")
+	default:
+		return ""
+	}
+}
+
+// rulesTarget selects how the rules content should point the agent at the
+// skill workflows, based on the provider's actual skill delivery mechanism.
+type rulesTarget int
+
+const (
+	rulesTargetGeneric rulesTarget = iota
+	rulesTargetClaudeCode
+	rulesTargetPi
+)
+
+func selectRulesTarget(isClaudeCode, isPi bool) rulesTarget {
+	switch {
+	case isClaudeCode:
+		return rulesTargetClaudeCode
+	case isPi:
+		return rulesTargetPi
+	default:
+		return rulesTargetGeneric
+	}
+}
+
+func isPiChoice(choice int) bool {
+	return choice == 9 || choice == 10
+}
+
+// resolveSkillsDest returns the skills directory for the given init choice,
+// or "" when the provider has no verified skills directory. Project-level
+// targets use the tool-agnostic AgentSkills location so the skill set can be
+// versioned with the repository; user-level targets use each provider's own
+// directory. All destinations mirror skills/install.sh documentation.
+func resolveSkillsDest(choice int) string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	homeDir, _ := os.UserHomeDir()
+
+	switch choice {
+	case 1, 2:
+		return filepath.Join(homeDir, ".claude", "skills")
+	case 4:
+		return filepath.Join(homeDir, ".cursor", "skills")
+	case 7:
+		return filepath.Join(homeDir, ".config", "gemini-cli", "skills")
+	case 9:
+		return filepath.Join(cwd, ".agents", "skills")
+	case 10:
+		return filepath.Join(homeDir, ".pi", "agent", "skills")
 	default:
 		return ""
 	}
 }
 
 // generateRulesContent builds the skill awareness rules from embedded SKILL.md
-// files. When isClaudeCode is true, adds stronger enforcement language specific
-// to Claude Code's built-in tools (Read, Grep, Edit).
-func generateRulesContent(isClaudeCode ...bool) string {
-	claude := len(isClaudeCode) > 0 && isClaudeCode[0]
+// files. The rulesTarget tunes provider-specific guidance: Claude Code gets
+// stronger enforcement language against its built-in tools, and Pi gets the
+// slash-command route registered by pi-mcp-adapter instead of raw prompts/get.
+func generateRulesContent(target ...rulesTarget) string {
+	t := rulesTargetGeneric
+	if len(target) > 0 {
+		t = target[0]
+	}
+	claude := t == rulesTargetClaudeCode
 	var b strings.Builder
 	b.WriteString("## agent-lsp Skills\n\n")
 	b.WriteString("agent-lsp provides 66 code intelligence tools and 23 workflow skills.\n")
@@ -324,7 +427,14 @@ func generateRulesContent(isClaudeCode ...bool) string {
 		fmt.Fprintf(&b, "| `/%s` | %s |\n", meta.Name, desc)
 	}
 
-	b.WriteString("\nCall `prompts/get` with any skill name for full workflow instructions.\n")
+	switch t {
+	case rulesTargetPi:
+		// pi-mcp-adapter registers MCP prompts as Pi slash commands, and the
+		// server exposes activate_skill for phase enforcement.
+		b.WriteString("\nLoad full workflow instructions with `/mcp__agent-lsp__<skill>` slash commands (e.g. `/mcp__agent-lsp__lsp-refactor`), or call the `activate_skill` tool with a skill name to enable phase enforcement.\n")
+	default:
+		b.WriteString("\nCall `prompts/get` with any skill name for full workflow instructions.\n")
+	}
 	return b.String()
 }
 

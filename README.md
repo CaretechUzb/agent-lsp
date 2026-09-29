@@ -163,6 +163,7 @@ Symbol edit tools (`replace_symbol_body`, `insert_after_symbol`, `insert_before_
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | stdio | `agent-lsp init` |
 | [Continue](https://continue.dev) | stdio | `agent-lsp init` |
 | [Cline](https://github.com/cline/cline) | stdio | `agent-lsp init` |
+| [Pi](https://github.com/earendil-works/pi) | stdio | `agent-lsp init` + `pi install npm:pi-mcp-adapter` |
 | Any MCP client | HTTP+SSE | `agent-lsp --http --port 8080` |
 
 See [docs/getting-started/mcp-clients.md](./docs/getting-started/mcp-clients.md) for copy-paste configs.
@@ -334,7 +335,19 @@ Probes each configured language server and reports capabilities. Fix any failure
 agent-lsp init
 ```
 
-Detects language servers on your PATH, asks which AI tool you use, writes the correct MCP config, and installs skill awareness rules for your AI provider (CLAUDE.md for Claude Code, `.cursor/rules/` for Cursor, `.clinerules` for Cline, `.windsurfrules` for Windsurf, `GEMINI.md` for Gemini CLI). For CI or scripted use: `agent-lsp init --non-interactive`.
+Detects language servers on your PATH, asks which AI tool you use, writes the correct MCP config, and installs skill awareness rules for your AI provider (CLAUDE.md for Claude Code, `.cursor/rules/` for Cursor, `.clinerules` for Cline, `.windsurfrules` for Windsurf, `GEMINI.md` for Gemini CLI, `AGENTS.md` for Pi). For CI or scripted use: `agent-lsp init --non-interactive`.
+
+For [Pi](https://github.com/earendil-works/pi), choose the project (`9`) or global (`10`) target. Pi has no built-in MCP support; `init` writes the shared standard MCP files that the [`pi-mcp-adapter`](https://www.npmjs.com/package/pi-mcp-adapter) package reads — project `.mcp.json` (same file Claude Code uses, so one config serves both) or global `~/.config/mcp/mcp.json`. Skill awareness rules go into `AGENTS.md` (project) or `~/.pi/agent/AGENTS.md` (global). Install the adapter once with `pi install npm:pi-mcp-adapter`.
+
+#### One-command complete setup
+
+Add `--with-skills` to also install the embedded skill files (no repo clone needed):
+
+```bash
+agent-lsp init --with-skills
+```
+
+Skills are written to the destination matching the chosen target: only the Pi project target (`9`) uses the tool-agnostic `.agents/skills/` directory (versionable with the repo); the Pi global target (`10`) uses `~/.pi/agent/skills/`; the Claude Code targets (`1`/`2`) use `~/.claude/skills/`; Cursor (`4`) uses `~/.cursor/skills/`; and Gemini CLI (`7`) uses `~/.config/gemini-cli/skills/`. Providers without a verified skills directory are skipped with a pointer to `skills/install.sh --dest`. Re-running overwrites the managed skill files, keeping them in sync with the installed binary. `agent-lsp uninstall` removes them.
 
 The generated config looks like:
 
@@ -363,9 +376,11 @@ git clone https://github.com/blackwell-systems/agent-lsp.git /tmp/agent-lsp-skil
 cd /tmp/agent-lsp-skills/skills && ./install.sh --copy
 ```
 
-Skills are prompt files copied into your AI tool's configuration. `--copy` means the clone can be safely deleted afterward.
+Or skip the clone entirely: `agent-lsp init --with-skills` installs the same embedded skills to the destination matching your chosen target.
 
-Skills are also available as **MCP prompts**: any MCP client can discover them via `prompts/list` and retrieve full workflow instructions via `prompts/get`, with no manual installation required. The `install.sh` path is for AgentSkills-compatible clients (Claude Code slash commands).
+Skills are prompt files copied into your AI tool's configuration. `--copy` means the clone can be safely deleted afterward. The script defaults to `~/.claude/skills/`; pass `--dest` for other agents, e.g. `--dest ~/.pi/agent/skills` for Pi. It also appends a managed skills table to existing instruction files (`~/.claude/CLAUDE.md`, project `AGENTS.md`, `~/.pi/agent/AGENTS.md`, `GEMINI.md`).
+
+Skills are also available as **MCP prompts**: any MCP client can discover them via `prompts/list` and retrieve full workflow instructions via `prompts/get`, with no manual installation required. The `install.sh` path is for AgentSkills-compatible clients (Claude Code slash commands, Pi `/skill:name` commands).
 
 ### Step 6: Allow tool permissions (Claude Code)
 
