@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/blackwell-systems/agent-lsp/skills"
 )
 
 // runUninstall is the entry point for `agent-lsp uninstall`.
@@ -114,10 +116,12 @@ func cleanMCPConfig(path string, dryRun bool) (int, int) {
 
 	keysToRemove := []string{"agent-lsp", "lsp"}
 	removedCount := 0
+	simulatedServers := len(servers)
 	for _, key := range keysToRemove {
 		if _, exists := servers[key]; exists {
 			if dryRun {
 				fmt.Printf("[dry-run] Would remove key %q from mcpServers in %s\n", key, path)
+				simulatedServers--
 			} else {
 				delete(servers, key)
 			}
@@ -127,8 +131,14 @@ func cleanMCPConfig(path string, dryRun bool) (int, int) {
 
 	// A config that holds nothing of user value (an empty mcpServers map
 	// and no other top-level keys) is a husk init likely created: remove it,
-	// whether or not this run removed a key from it.
-	emptyHusk := len(servers) == 0 && len(raw) == 1
+	// whether or not this run removed a key from it. In dry-run the simulated
+	// post-removal server count decides, so a config that would become empty
+	// after the reported key removals is previewed as deleted too.
+	effectiveServers := len(servers)
+	if dryRun {
+		effectiveServers = simulatedServers
+	}
+	emptyHusk := effectiveServers == 0 && len(raw) == 1
 	if removedCount == 0 && !emptyHusk {
 		return 0, 1
 	}
@@ -138,6 +148,9 @@ func cleanMCPConfig(path string, dryRun bool) (int, int) {
 			fmt.Printf("[dry-run] Would remove empty config file %s\n", path)
 		} else if err := os.Remove(path); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not remove empty config %s: %v\n", path, err)
+			// The file stays on disk with its original MCP entries, so report
+			// it as skipped rather than removed. (PR #36 review follow-up)
+			return 0, 1
 		}
 		if removedCount == 0 {
 			removedCount++
@@ -161,17 +174,25 @@ func cleanMCPConfig(path string, dryRun bool) (int, int) {
 	return removedCount, 0
 }
 
-// cleanSkillDirs removes all lsp-* directories from the skills directory.
-// Returns (removed, skipped).
+// cleanSkillDirs removes the managed skill directories from the skills
+// directory. A directory counts as managed only when its name matches the
+// skill set embedded in this binary (skills.Names): the lsp- prefix alone does
+// not establish ownership, and a user-owned skill sharing the prefix must
+// survive uninstall. Returns (removed, skipped).
 func cleanSkillDirs(skillsDir string, dryRun bool) (int, int) {
 	entries, err := os.ReadDir(skillsDir)
 	if err != nil {
 		return 0, 1
 	}
 
+	managed := make(map[string]bool)
+	for _, name := range skills.Names() {
+		managed[name] = true
+	}
+
 	removedCount := 0
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "lsp-") {
+		if e.IsDir() && managed[e.Name()] {
 			p := filepath.Join(skillsDir, e.Name())
 			if dryRun {
 				fmt.Printf("[dry-run] Would remove skill directory %s\n", p)
@@ -199,8 +220,10 @@ var managedSentinels = [][2]string{
 	{"<!-- agent-lsp:skills:start -->", "<!-- agent-lsp:skills:end -->"},
 }
 
-// cleanManagedSection removes the managed section between sentinel comments
-// from the given file. Returns (removed, skipped).
+// cleanManagedSection removes every managed section between sentinel comment
+// pairs from the given file: a file may hold both the rules and skills
+// sentinel pairs, and all of them belong to agent-lsp. Returns (removed,
+// skipped).
 func cleanManagedSection(path string, dryRun bool) (int, int) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -208,57 +231,56 @@ func cleanManagedSection(path string, dryRun bool) (int, int) {
 	}
 
 	content := string(data)
-	var endMarker string
-	startIdx := -1
-	endIdx := -1
+	newContent := content
+	removedCount := 0
 	for _, pair := range managedSentinels {
-		s := strings.Index(content, pair[0])
-		if s == -1 {
-			continue
+		for {
+			s := strings.Index(newContent, pair[0])
+			if s == -1 {
+				break
+			}
+			e := strings.Index(newContent, pair[1])
+			if e == -1 || e < s {
+				break
+			}
+			endIdx := e + len(pair[1])
+			// Also remove a trailing newline if present.
+			if endIdx < len(newContent) && newContent[endIdx] == '\n' {
+				endIdx++
+			}
+			newContent = newContent[:s] + newContent[endIdx:]
+			removedCount++
 		}
-		e := strings.Index(content, pair[1])
-		if e == -1 || e < s {
-			continue
-		}
-		endMarker = pair[1]
-		startIdx, endIdx = s, e
-		break
 	}
-	if startIdx == -1 {
+	if removedCount == 0 {
 		return 0, 1
 	}
 
-	endIdx += len(endMarker)
-	// Also remove a trailing newline if present.
-	if endIdx < len(content) && content[endIdx] == '\n' {
-		endIdx++
-	}
-
 	if dryRun {
-		fmt.Printf("[dry-run] Would remove managed section from %s\n", path)
-		return 1, 0
+		fmt.Printf("[dry-run] Would remove %d managed section(s) from %s\n", removedCount, path)
+		// Report the simulated end state: if nothing user-owned would remain,
+		// the file would be deleted after the section removals.
+		if strings.TrimSpace(newContent) == "" {
+			fmt.Printf("[dry-run] Would remove empty rules file %s\n", path)
+		}
+		return removedCount, 0
 	}
 
-	newContent := content[:startIdx] + content[endIdx:]
-	// If the file holds nothing but the removed section, remove the file
+	// If the file holds nothing but the removed sections, remove the file
 	// init likely created.
 	if strings.TrimSpace(newContent) == "" {
-		if dryRun {
-			fmt.Printf("[dry-run] Would remove empty rules file %s\n", path)
-			return 1, 0
-		}
 		if err := os.Remove(path); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not remove empty rules file %s: %v\n", path, err)
 			return 0, 1
 		}
-		return 1, 0
+		return removedCount, 0
 	}
 	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", path, err)
 		return 0, 1
 	}
 
-	return 1, 0
+	return removedCount, 0
 }
 
 // cleanPath removes a file or directory. Returns (removed, skipped).

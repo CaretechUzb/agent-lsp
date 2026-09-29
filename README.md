@@ -347,7 +347,7 @@ Add `--with-skills` to also install the embedded skill files (no repo clone need
 agent-lsp init --with-skills
 ```
 
-Skills are written to the destination matching the chosen target: project setups use the tool-agnostic `.agents/skills/` directory (versionable with the repo), Pi global uses `~/.pi/agent/skills/`, and Claude Code, Cursor, and Gemini CLI get their own documented skill directories. Providers without a verified skills directory are skipped with a pointer to `skills/install.sh --dest`. Re-running overwrites the managed skill files, keeping them in sync with the installed binary. `agent-lsp uninstall` removes them.
+Skills are written to the destination matching the chosen target: only the Pi project target (`9`) uses the tool-agnostic `.agents/skills/` directory (versionable with the repo); the Pi global target (`10`) uses `~/.pi/agent/skills/`; the Claude Code targets (`1`/`2`) use `~/.claude/skills/`; Cursor (`4`) uses `~/.cursor/skills/`; and Gemini CLI (`7`) uses `~/.config/gemini-cli/skills/`. Providers without a verified skills directory are skipped with a pointer to `skills/install.sh --dest`. Re-running overwrites the managed skill files, keeping them in sync with the installed binary. `agent-lsp uninstall` removes them.
 
 The generated config looks like:
 

@@ -225,7 +225,10 @@ func TestWriteManagedSection_PiRulesSentinels(t *testing.T) {
 	if err := writeManagedSection(path, "managed-body-2"); err != nil {
 		t.Fatalf("second writeManagedSection error: %v", err)
 	}
-	data, _ = os.ReadFile(path)
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("could not re-read AGENTS.md: %v", err)
+	}
 	text = string(data)
 	if strings.Count(text, managedSectionStart) != 1 {
 		t.Errorf("expected exactly one managed section, found %d", strings.Count(text, managedSectionStart))
