@@ -10,7 +10,7 @@ import (
 // with no publishDiagnostics notification is reported honestly rather than as
 // "safe to proceed". (issue #44)
 func TestDiagnosticsHint_DeadChannel(t *testing.T) {
-	hint := diagnosticsHint(false, []string{"file:///dead.go"}, 0, false)
+	hint := diagnosticsHint(false, []string{"file:///dead.go"}, 0, nil, nil)
 	if !strings.Contains(hint, "No diagnostics received") {
 		t.Errorf("expected 'No diagnostics received', got: %s", hint)
 	}
@@ -25,7 +25,7 @@ func TestDiagnosticsHint_DeadChannel(t *testing.T) {
 // TestDiagnosticsHint_LiveEmptyPublish verifies that a published empty array
 // (live channel, nothing found) still yields the safe hint. (issue #44)
 func TestDiagnosticsHint_LiveEmptyPublish(t *testing.T) {
-	hint := diagnosticsHint(false, nil, 1, false)
+	hint := diagnosticsHint(false, nil, 1, nil, nil)
 	if hint != "No errors. Safe to proceed." {
 		t.Errorf("expected safe hint, got: %s", hint)
 	}
@@ -34,7 +34,7 @@ func TestDiagnosticsHint_LiveEmptyPublish(t *testing.T) {
 // TestDiagnosticsHint_ErrorsPresent verifies that actual errors keep the
 // suggest_fixes hint, even on a dead channel. (issue #44)
 func TestDiagnosticsHint_ErrorsPresent(t *testing.T) {
-	hint := diagnosticsHint(true, []string{"file:///dead.go"}, 0, false)
+	hint := diagnosticsHint(true, []string{"file:///dead.go"}, 0, nil, nil)
 	if !strings.Contains(hint, "suggest_fixes") {
 		t.Errorf("expected fixes hint, got: %s", hint)
 	}
@@ -44,7 +44,7 @@ func TestDiagnosticsHint_ErrorsPresent(t *testing.T) {
 // hint while dead files are listed as unconfirmed, in deterministic order.
 // (issue #44)
 func TestDiagnosticsHint_MixedLiveAndDead(t *testing.T) {
-	hint := diagnosticsHint(false, []string{"file:///b_dead.go", "file:///a_dead.go"}, 2, false)
+	hint := diagnosticsHint(false, []string{"file:///b_dead.go", "file:///a_dead.go"}, 2, nil, nil)
 	if !strings.Contains(hint, "No errors. Safe to proceed.") {
 		t.Errorf("expected safe hint for the live files, got: %s", hint)
 	}
@@ -59,7 +59,7 @@ func TestDiagnosticsHint_MixedLiveAndDead(t *testing.T) {
 // TestDiagnosticsHint_NoQueriedDocuments verifies the empty-query case preserves
 // the historical hint (no file_path and no open documents). (issue #44)
 func TestDiagnosticsHint_NoQueriedDocuments(t *testing.T) {
-	if hint := diagnosticsHint(false, nil, 0, false); hint != "No errors. Safe to proceed." {
+	if hint := diagnosticsHint(false, nil, 0, nil, nil); hint != "No errors. Safe to proceed." {
 		t.Errorf("expected safe hint for empty query, got: %s", hint)
 	}
 }
@@ -140,7 +140,7 @@ func TestShouldAttemptPull(t *testing.T) {
 // successful pull yields the ordinary safe hint: a pull answer is verification,
 // so it must not be reported as an unverified dead channel. (issue #43)
 func TestDiagnosticsHint_PullSucceeded(t *testing.T) {
-	hint := diagnosticsHint(false, nil, 1, false)
+	hint := diagnosticsHint(false, nil, 1, nil, nil)
 	if hint != "No errors. Safe to proceed." {
 		t.Errorf("expected safe hint after a successful pull, got: %s", hint)
 	}
@@ -150,7 +150,7 @@ func TestDiagnosticsHint_PullSucceeded(t *testing.T) {
 // the server declares diagnosticProvider, a pull was attempted for the dead
 // document, and it did not respond. (issue #43)
 func TestDiagnosticsHint_PullAttemptedButFailed(t *testing.T) {
-	hint := diagnosticsHint(false, []string{"file:///dead.go"}, 0, true)
+	hint := diagnosticsHint(false, []string{"file:///dead.go"}, 0, []string{"file:///dead.go"}, nil)
 	if !strings.Contains(hint, "its pull diagnostics did not respond") {
 		t.Errorf("expected pull-did-not-respond wording, got: %s", hint)
 	}
@@ -167,7 +167,7 @@ func TestDiagnosticsHint_PullAttemptedButFailed(t *testing.T) {
 // two failure modes (no pull model vs pull did not respond) stay distinct.
 // (issue #43)
 func TestDiagnosticsHint_PullIncapableWordingUnchanged(t *testing.T) {
-	hint := diagnosticsHint(false, []string{"file:///dead.go"}, 0, false)
+	hint := diagnosticsHint(false, []string{"file:///dead.go"}, 0, nil, nil)
 	if strings.Contains(hint, "pull diagnostics did not respond") {
 		t.Errorf("pull-incapable wording must not mention a pull attempt, got: %s", hint)
 	}
@@ -180,7 +180,7 @@ func TestDiagnosticsHint_PullIncapableWordingUnchanged(t *testing.T) {
 // failed pull for the unconfirmed files while keeping the safe hint for the
 // files that did report. (issue #43)
 func TestDiagnosticsHint_MixedPullFailed(t *testing.T) {
-	hint := diagnosticsHint(false, []string{"file:///dead.go"}, 3, true)
+	hint := diagnosticsHint(false, []string{"file:///dead.go"}, 3, []string{"file:///dead.go"}, nil)
 	if !strings.Contains(hint, "No errors. Safe to proceed.") {
 		t.Errorf("expected safe hint for the verified files, got: %s", hint)
 	}
@@ -189,5 +189,50 @@ func TestDiagnosticsHint_MixedPullFailed(t *testing.T) {
 	}
 	if !strings.Contains(hint, "those files are not confirmed clean") {
 		t.Errorf("expected unconfirmed caveat, got: %s", hint)
+	}
+}
+
+// TestDiagnosticsHint_PullAttemptedMixedWithSkipped verifies that when the pull
+// budget ran out mid-way, only the documents whose pull actually went out are
+// reported as "did not respond"; the skipped ones are stated as never
+// attempted. (issue #43, review follow-up)
+func TestDiagnosticsHint_PullAttemptedMixedWithSkipped(t *testing.T) {
+	dead := []string{"file:///a_dead.go", "file:///b_dead.go"}
+	hint := diagnosticsHint(false, dead, 0,
+		[]string{"file:///a_dead.go"}, []string{"file:///b_dead.go"})
+	if !strings.Contains(hint, "pull did not respond for file:///a_dead.go") {
+		t.Errorf("expected attempted-dead note, got: %s", hint)
+	}
+	if !strings.Contains(hint, "no pull was attempted for file:///b_dead.go") {
+		t.Errorf("expected skipped-dead note, got: %s", hint)
+	}
+	if strings.Contains(hint, "Safe to proceed") {
+		t.Errorf("must not claim safety for unverified documents, got: %s", hint)
+	}
+
+	hint = diagnosticsHint(false, dead, 1,
+		[]string{"file:///a_dead.go"}, []string{"file:///b_dead.go"})
+	if !strings.Contains(hint, "No errors. Safe to proceed.") {
+		t.Errorf("expected safe hint for the verified files, got: %s", hint)
+	}
+	if !strings.Contains(hint, "pull did not respond for file:///a_dead.go") {
+		t.Errorf("expected attempted-dead note, got: %s", hint)
+	}
+	if !strings.Contains(hint, "no pull was attempted for file:///b_dead.go") {
+		t.Errorf("expected skipped-dead note, got: %s", hint)
+	}
+}
+
+// TestDiagnosticsHint_BudgetSkippedAllKeepsGenericWording verifies that when no
+// pull was attempted at all (budget exhausted before the first pull), the
+// wording makes no claim that a pull was tried. (issue #43, review follow-up)
+func TestDiagnosticsHint_BudgetSkippedAllKeepsGenericWording(t *testing.T) {
+	hint := diagnosticsHint(false, []string{"file:///dead.go"}, 0, nil,
+		[]string{"file:///dead.go"})
+	if strings.Contains(hint, "pull") {
+		t.Errorf("skipped-only hint must not mention a pull attempt, got: %s", hint)
+	}
+	if !strings.Contains(hint, "does not confirm the file is clean") {
+		t.Errorf("expected clean-file caveat, got: %s", hint)
 	}
 }
