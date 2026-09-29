@@ -108,11 +108,83 @@ func HandleRenameSymbol(ctx context.Context, client *lsp.LSPClient, args map[str
 		return types.ErrorResult(fmt.Sprintf("rename_symbol: applying edit: %s", err)), nil
 	}
 
-	errCount, warnCount := getDiagnosticsForFile(ctx, client, filePath)
+	errCount, warnCount, verified := getDiagnosticsForFileStatus(ctx, client, filePath)
 	summary := fmt.Sprintf("Renamed to %q across %d location(s) in %d file(s): %s",
 		newName, locations, files, strings.Join(fileNames, ", "))
-	hint := fmt.Sprintf("errors_after: %d, warnings_after: %d. Run get_diagnostics for details.", errCount, warnCount)
+	hint := postEditDiagnosticsHint(errCount, warnCount, verified)
+	// A rename can edit files other than the requested one, and the counts
+	// above cover only filePath. Verify the diagnostics channel of every other
+	// edited file, so the result is not presented as verified when a sibling
+	// file's channel is dead. (issue #44 review follow-up)
+	if unverified := verifyWorkspaceEditChannels(ctx, client, result, filePath); len(unverified) > 0 {
+		sort.Strings(unverified)
+		hint += " Diagnostics channel unverified for edited file(s): " + strings.Join(unverified, ", ") + "."
+	}
 	return appendHint(types.TextResult(summary), hint), nil
+}
+
+// verifyWorkspaceEditChannels re-checks the diagnostics channel of every file
+// touched by the applied workspace edit except requestedFilePath: it drops the
+// cached diagnostics, reopens the document to trigger a fresh publication, and
+// reports the URIs whose channel still published nothing. A rename result must
+// not read as verified when only the requested file's channel answered.
+// (issue #44 review follow-up)
+func verifyWorkspaceEditChannels(ctx context.Context, client *lsp.LSPClient, edit any, requestedFilePath string) []string {
+	uris := workspaceEditURIs(edit)
+	if len(uris) == 0 || client == nil {
+		return nil
+	}
+	requestedURI := lsp.NormalizeFileURI(CreateFileURI(requestedFilePath))
+	var unverified []string
+	for _, uri := range uris {
+		if lsp.NormalizeFileURI(uri) == requestedURI {
+			continue
+		}
+		client.ResetDiagnostics(uri)
+		_ = client.ReopenDocument(ctx, uri)
+		_ = lsp.WaitForDiagnostics(ctx, client, []string{uri}, 5000)
+		if !client.HasPublishedDiagnostics(uri) {
+			unverified = append(unverified, uri)
+		}
+	}
+	return unverified
+}
+
+// workspaceEditURIs lists the document URIs a WorkspaceEdit touches, handling
+// both the "changes" (map[uri][]TextEdit) and "documentChanges"
+// ([]TextDocumentEdit) forms. The result is deduplicated and sorted.
+func workspaceEditURIs(edit any) []string {
+	data, err := json.Marshal(edit)
+	if err != nil {
+		return nil
+	}
+	var we struct {
+		Changes         map[string]json.RawMessage `json:"changes"`
+		DocumentChanges []struct {
+			TextDocument struct {
+				URI string `json:"uri"`
+			} `json:"textDocument"`
+		} `json:"documentChanges"`
+	}
+	if err := json.Unmarshal(data, &we); err != nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var uris []string
+	for uri := range we.Changes {
+		if !seen[uri] {
+			seen[uri] = true
+			uris = append(uris, uri)
+		}
+	}
+	for _, dc := range we.DocumentChanges {
+		if dc.TextDocument.URI != "" && !seen[dc.TextDocument.URI] {
+			seen[dc.TextDocument.URI] = true
+			uris = append(uris, dc.TextDocument.URI)
+		}
+	}
+	sort.Strings(uris)
+	return uris
 }
 
 // summarizeWorkspaceEdit counts the files and edit locations in a WorkspaceEdit,

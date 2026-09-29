@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -748,5 +749,38 @@ func TestSummarizeWorkspaceEdit_Empty(t *testing.T) {
 	files, locations, names := summarizeWorkspaceEdit(map[string]any{})
 	if files != 0 || locations != 0 || names != nil {
 		t.Errorf("got files=%d locations=%d names=%v, want 0/0/nil", files, locations, names)
+	}
+}
+
+// TestWorkspaceEditURIs verifies the URI extraction used to verify every file
+// touched by a rename: both the "changes" map and the "documentChanges" list,
+// deduplicated and sorted. (issue #44 review follow-up)
+func TestWorkspaceEditURIs(t *testing.T) {
+	changes := map[string]any{
+		"changes": map[string]any{
+			"file:///b.go": []map[string]any{{"range": map[string]any{}, "newText": "x"}},
+			"file:///a.go": []map[string]any{{"range": map[string]any{}, "newText": "y"}},
+		},
+	}
+	got := workspaceEditURIs(changes)
+	want := []string{"file:///a.go", "file:///b.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("workspaceEditURIs(changes) = %v, want %v", got, want)
+	}
+
+	docChanges := map[string]any{
+		"documentChanges": []map[string]any{
+			{"textDocument": map[string]any{"uri": "file:///c.go"}, "edits": []any{}},
+			{"textDocument": map[string]any{"uri": "file:///a.go"}, "edits": []any{}},
+		},
+	}
+	got = workspaceEditURIs(docChanges)
+	want = []string{"file:///a.go", "file:///c.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("workspaceEditURIs(documentChanges) = %v, want %v", got, want)
+	}
+
+	if got := workspaceEditURIs(map[string]any{}); len(got) != 0 {
+		t.Errorf("workspaceEditURIs(empty) = %v, want none", got)
 	}
 }
