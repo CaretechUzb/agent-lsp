@@ -1,18 +1,18 @@
 [English](../../README.md) · [简体中文](README.zh-CN.md) · **Русский** · [हिन्दी](README.hi.md) · [العربية](README.ar.md)
 
 <p align="center">
-  <img src="assets/banner.png" alt="agent-lsp" width="820">
+  <img src="../../assets/banner.png" alt="agent-lsp" width="820">
 </p>
 
 <p align="center">
   <a href="#tools"><img src="https://img.shields.io/badge/CI--verified_tools-65%2F65-brightgreen.svg" alt="CI Coverage"></a>
   <a href="#multi-language-support"><img src="https://img.shields.io/badge/languages-30_CI--verified-brightgreen.svg" alt="Languages"></a>
   <a href="https://github.com/blackwell-systems/mcp-assert"><img src="https://raw.githubusercontent.com/blackwell-systems/mcp-assert/main/assets/badge-passing.svg?v=3" alt="mcp-assert: passing" height="20"></a>
-  <a href="https://agentskills.io"><img src="assets/badge-agentskills.svg" alt="Agent Skills"></a>
+  <a href="https://agentskills.io"><img src="../../assets/badge-agentskills.svg" alt="Agent Skills"></a>
   <a href="https://github.com/blackwell-systems/agent-lsp"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/blackwell-systems/agent-lsp/badges/assets/downloads-badge.json" alt="downloads"></a>
   <br>
   <a href="https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/"><img src="https://img.shields.io/badge/LSP-3.17-blue.svg" alt="LSP 3.17"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="../../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="https://github.com/punkpeye/awesome-mcp-servers"><img src="https://img.shields.io/badge/Awesome-MCP%20Servers-fc60a8" alt="Awesome MCP Servers"></a>
   <a href="https://github.com/blackwell-systems"><img src="https://raw.githubusercontent.com/blackwell-systems/blackwell-docs-theme/main/badge-trademark.svg" alt="Blackwell Systems"></a>
 </p>
@@ -90,11 +90,11 @@ CI agent-lsp запускает **32 реальных языковых серв�
 
 `preview_edit` предпросматривает диагностическое влияние любой правки. Вы точно видите, что сломается, ещё до того, как файл будет затронут. `simulate_chain` оценивает последовательность зависимых правок (переименовать функцию, обновить всех вызывающих, изменить тип возвращаемого значения) и сообщает, какой шаг первым вносит ошибку.
 
-8 инструментов спекулятивного выполнения. Полный рабочий процесс см. в [docs/guide/speculative-execution.md](./docs/guide/speculative-execution.md).
+8 инструментов спекулятивного выполнения. Полный рабочий процесс см. в [docs/guide/speculative-execution.md](../../docs/guide/speculative-execution.md).
 
 ### Экономия токенов
 
-Структурированные ответы LSP используют **в 5-34 раза меньше токенов**, чем grep/read на тех же задачах. На HashiCorp Consul (319 тыс. строк) анализ радиуса влияния использует 17,7 МБ через grep против 841 КБ через LSP, сокращая 5 534 вызова инструментов до 119. Экономия масштабируется с размером кодовой базы. Полный эксперимент по пяти кодовым базам см. в [docs/guide/token-savings.md](./docs/guide/token-savings.md).
+Структурированные ответы LSP используют **в 5-34 раза меньше токенов**, чем grep/read на тех же задачах. На HashiCorp Consul (319 тыс. строк) анализ радиуса влияния использует 17,7 МБ через grep против 841 КБ через LSP, сокращая 5 534 вызова инструментов до 119. Экономия масштабируется с размером кодовой базы. Полный эксперимент по пяти кодовым базам см. в [docs/guide/token-savings.md](../../docs/guide/token-savings.md).
 
 ### Оптимизированный по токенам вывод (GCF)
 
@@ -106,7 +106,7 @@ CI agent-lsp запускает **32 реальных языковых серв�
 | Graph | blast_radius, find_callers, explore_symbol, find_references, type_hierarchy, cross_repo, detect_changes, list_symbols | **79-84%** |
 | Graph + дедупликация в рамках сессии | То же, через [gcf-proxy](https://github.com/blackwell-systems/gcf-proxy) `--session` | **92,7%** (5-й вызов) |
 
-Сгруппированные/вложенные ответы (вызывающие под символом, диагностика со связанной информацией) тоже табулируются, давая ~14% против JSON на этой форме ([подробности](./docs/guide/gcf-integration.md#nested-container-responses-grouped-data)).
+Сгруппированные/вложенные ответы (вызывающие под символом, диагностика со связанной информацией) тоже табулируются, давая ~14% против JSON на этой форме ([подробности](../../docs/guide/gcf-integration.md#nested-container-responses-grouped-data)).
 
 GCF включён по умолчанию. Чтобы вернуться к JSON:
 
@@ -114,7 +114,7 @@ GCF включён по умолчанию. Чтобы вернуться к JSO
 export AGENT_LSP_OUTPUT_FORMAT=json
 ```
 
-Бенчмарк: `go run scripts/gcf-benchmark.go`. Детали архитектуры см. в [docs/guide/gcf-integration.md](./docs/guide/gcf-integration.md).
+Бенчмарк: `go run scripts/gcf-benchmark.go`. Детали архитектуры см. в [docs/guide/gcf-integration.md](../../docs/guide/gcf-integration.md).
 
 **GCF:** [gcformat.com](https://gcformat.com) · [Spec](https://github.com/blackwell-systems/gcf) · [Go](https://github.com/blackwell-systems/gcf-go) · [Python](https://github.com/blackwell-systems/gcf-python) · [TypeScript](https://github.com/blackwell-systems/gcf-typescript) · [Playground](https://gcformat.com/playground.html)
 
@@ -134,7 +134,7 @@ agent-lsp решает это, кодируя корректные многош�
 
 Когда агент активирует навык, каждый вызов инструмента проверяется на соответствие разрешениям текущей фазы. Вызов `apply_edit` во время анализа радиуса влияния не проходит молча; он возвращает ошибку с конкретным руководством по восстановлению («сначала завершите фазу blast_radius, разрешённые инструменты: [blast_radius, find_references]»). Фазы продвигаются автоматически по мере того, как агент вызывает инструменты из более поздних фаз.
 
-Ни один другой поставщик инструментов MCP не принуждает к порядку рабочего процесса во время выполнения. См. [docs/guide/phase-enforcement.md](./docs/guide/phase-enforcement.md).
+Ни один другой поставщик инструментов MCP не принуждает к порядку рабочего процесса во время выполнения. См. [docs/guide/phase-enforcement.md](../../docs/guide/phase-enforcement.md).
 
 ### Анализ конкурентности
 
@@ -165,13 +165,13 @@ agent-lsp решает это, кодируя корректные многош�
 | [Cline](https://github.com/cline/cline) | stdio | `agent-lsp init` |
 | Любой MCP-клиент | HTTP+SSE | `agent-lsp --http --port 8080` |
 
-Готовые к копированию конфигурации см. в [docs/getting-started/mcp-clients.md](./docs/getting-started/mcp-clients.md).
+Готовые к копированию конфигурации см. в [docs/getting-started/mcp-clients.md](../../docs/getting-started/mcp-clients.md).
 
 ## Навыки
 
 Сырые инструменты игнорируются. Навыки используются. Каждый навык кодирует правильную последовательность инструментов, так что рабочие процессы действительно происходят без пооперационных инструкций по оркестрации на каждый промпт. Навыки доступны как слэш-команды [AgentSkills](https://github.com/anthropics/agent-skills) и как MCP-промпты через `prompts/list` / `prompts/get` для любого MCP-клиента.
 
-Полные описания и руководство по использованию см. в [docs/guide/skills.md](./docs/guide/skills.md).
+Полные описания и руководство по использованию см. в [docs/guide/skills.md](../../docs/guide/skills.md).
 
 **Прежде чем что-либо менять**
 
@@ -257,7 +257,7 @@ docker run --rm \
   --http --port 8080 go:gopls
 ```
 
-Образы по умолчанию запускаются от имени пользователя без прав root (uid 65532). Устанавливайте `AGENT_LSP_TOKEN` через переменную окружения, никогда через `--token` в командной строке. Образы также зеркалируются на Docker Hub (`blackwellsystems/agent-lsp`). Полный список тегов, настройку режима HTTP и параметры усиления безопасности см. в [DOCKER.md](./DOCKER.md).
+Образы по умолчанию запускаются от имени пользователя без прав root (uid 65532). Устанавливайте `AGENT_LSP_TOKEN` через переменную окружения, никогда через `--token` в командной строке. Образы также зеркалируются на Docker Hub (`blackwellsystems/agent-lsp`). Полный список тегов, настройку режима HTTP и параметры усиления безопасности см. в [DOCKER.md](../../DOCKER.md).
 
 ## Настройка
 
@@ -318,7 +318,7 @@ go install github.com/blackwell-systems/agent-lsp/cmd/agent-lsp@latest
 | C / C++ | `clangd` | `apt install clangd` / `brew install llvm` |
 | Ruby | `solargraph` | `gem install solargraph` |
 
-Полный список из 32 поддерживаемых языков в [docs/reference/language-support.md](./docs/reference/language-support.md).
+Полный список из 32 поддерживаемых языков в [docs/reference/language-support.md](../../docs/reference/language-support.md).
 
 ### Шаг 3: Проверьте настройку
 
@@ -326,7 +326,7 @@ go install github.com/blackwell-systems/agent-lsp/cmd/agent-lsp@latest
 agent-lsp doctor
 ```
 
-Проверяет каждый настроенный языковой сервер и сообщает о его возможностях. Устраните любые сбои перед продолжением. Команды установки и особенности конкретных серверов см. в [поддержке языков](./docs/reference/language-support.md).
+Проверяет каждый настроенный языковой сервер и сообщает о его возможностях. Устраните любые сбои перед продолжением. Команды установки и особенности конкретных серверов см. в [поддержке языков](../../docs/reference/language-support.md).
 
 ### Шаг 4: Настройте ваш AI-инструмент
 
@@ -382,7 +382,7 @@ cd /tmp/agent-lsp-skills/skills && ./install.sh --copy
 
 Без этого Claude Code будет запрашивать разрешение при каждом вызове инструмента. Другие MCP-клиенты обрабатывают разрешения иначе; сверьтесь с документацией вашего клиента.
 
-Навыки — это многоинструментальные рабочие процессы, кодирующие надёжные процедуры: проверка радиуса влияния перед правкой, спекулятивный предпросмотр перед записью, запуск тестов после изменения. Полный список см. в [docs/guide/skills.md](./docs/guide/skills.md).
+Навыки — это многоинструментальные рабочие процессы, кодирующие надёжные процедуры: проверка радиуса влияния перед правкой, спекулятивный предпросмотр перед записью, запуск тестов после изменения. Полный список см. в [docs/guide/skills.md](../../docs/guide/skills.md).
 
 ### Шаг 7: Начните работать
 
@@ -426,30 +426,30 @@ start_lsp(root_dir="/your/project")
 
 Go, Python, TypeScript, Rust, Java, C, C++, C#, Ruby, PHP, Kotlin, Swift, Scala, Zig, Lua, Elixir, Gleam, Clojure, Dart, Terraform, Nix, Prisma, SQL, MongoDB, JavaScript, YAML, JSON, Dockerfile, CSS, HTML, MQL.
 
-Полную матрицу покрытия см. в [docs/reference/language-support.md](./docs/reference/language-support.md).
+Полную матрицу покрытия см. в [docs/reference/language-support.md](../../docs/reference/language-support.md).
 
 ## Инструменты
 
 65 инструментов, охватывающих навигацию, анализ, рефакторинг, редактирование символов, композитное исследование, безопасное редактирование, спекулятивное выполнение и жизненный цикл сессии. Всё проверено в CI.
 
-Полный справочник с параметрами и примерами см. в [docs/reference/tools.md](./docs/reference/tools.md).
+Полный справочник с параметрами и примерами см. в [docs/reference/tools.md](../../docs/reference/tools.md).
 
 ## Дополнительное чтение
 
 ### Документация
 
-- [Справочник по инструментам](./docs/reference/tools.md): полный справочник по инструментам с параметрами и примерами
-- [Справочник по навыкам](./docs/guide/skills.md): справочник по навыкам, рабочие процессы, сценарии использования и композиция
-- [Поддержка языков](./docs/reference/language-support.md): матрица покрытия языков
-- [Архитектура](./docs/architecture/architecture.md): системный дизайн и внутреннее устройство
-- [Спекулятивное выполнение](./docs/guide/speculative-execution.md): рабочие процессы «симулируй, потом применяй»
-- [Соответствие LSP](./docs/reference/lsp-conformance.md): покрытие спецификации LSP 3.17
-- [Docker](./DOCKER.md): теги Docker, compose и кэширование томов
+- [Справочник по инструментам](../../docs/reference/tools.md): полный справочник по инструментам с параметрами и примерами
+- [Справочник по навыкам](../../docs/guide/skills.md): справочник по навыкам, рабочие процессы, сценарии использования и композиция
+- [Поддержка языков](../../docs/reference/language-support.md): матрица покрытия языков
+- [Архитектура](../../docs/architecture/architecture.md): системный дизайн и внутреннее устройство
+- [Спекулятивное выполнение](../../docs/guide/speculative-execution.md): рабочие процессы «симулируй, потом применяй»
+- [Соответствие LSP](../../docs/reference/lsp-conformance.md): покрытие спецификации LSP 3.17
+- [Docker](../../DOCKER.md): теги Docker, compose и кэширование томов
 
 ### Участие в разработке
 
-- [Заметки по CI](./docs/architecture/ci-notes.md): особенности CI и детали тестовой оснастки
-- [Распространение](./docs/architecture/distribution.md): каналы установки и конвейер релизов
+- [Заметки по CI](../../docs/architecture/ci-notes.md): особенности CI и детали тестовой оснастки
+- [Распространение](../../docs/architecture/distribution.md): каналы установки и конвейер релизов
 
 ## Разработка
 
@@ -474,7 +474,7 @@ defer client.Shutdown(ctx)
 locs, err := client.GetDefinition(ctx, fileURI, lsp.Position{Line: 10, Character: 4})
 ```
 
-Полный API пакетов см. в [docs/architecture/architecture.md](./docs/architecture/architecture.md).
+Полный API пакетов см. в [docs/architecture/architecture.md](../../docs/architecture/architecture.md).
 
 ## Лицензия
 

@@ -1,18 +1,18 @@
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [Русский](README.ru.md) · **हिन्दी** · [العربية](README.ar.md)
 
 <p align="center">
-  <img src="assets/banner.png" alt="agent-lsp" width="820">
+  <img src="../../assets/banner.png" alt="agent-lsp" width="820">
 </p>
 
 <p align="center">
   <a href="#tools"><img src="https://img.shields.io/badge/CI--verified_tools-65%2F65-brightgreen.svg" alt="CI Coverage"></a>
   <a href="#multi-language-support"><img src="https://img.shields.io/badge/languages-30_CI--verified-brightgreen.svg" alt="Languages"></a>
   <a href="https://github.com/blackwell-systems/mcp-assert"><img src="https://raw.githubusercontent.com/blackwell-systems/mcp-assert/main/assets/badge-passing.svg?v=3" alt="mcp-assert: passing" height="20"></a>
-  <a href="https://agentskills.io"><img src="assets/badge-agentskills.svg" alt="Agent Skills"></a>
+  <a href="https://agentskills.io"><img src="../../assets/badge-agentskills.svg" alt="Agent Skills"></a>
   <a href="https://github.com/blackwell-systems/agent-lsp"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/blackwell-systems/agent-lsp/badges/assets/downloads-badge.json" alt="downloads"></a>
   <br>
   <a href="https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/"><img src="https://img.shields.io/badge/LSP-3.17-blue.svg" alt="LSP 3.17"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="../../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="https://github.com/punkpeye/awesome-mcp-servers"><img src="https://img.shields.io/badge/Awesome-MCP%20Servers-fc60a8" alt="Awesome MCP Servers"></a>
   <a href="https://github.com/blackwell-systems"><img src="https://raw.githubusercontent.com/blackwell-systems/blackwell-docs-theme/main/badge-trademark.svg" alt="Blackwell Systems"></a>
 </p>
@@ -90,11 +90,11 @@ agent-lsp की CI हर push पर वास्तविक फ़िक्�
 
 `preview_edit` किसी भी एडिट के डायग्नोस्टिक प्रभाव का पूर्वावलोकन करता है। फ़ाइल को छूने से पहले आप ठीक-ठीक देख लेते हैं कि क्या टूटता है। `simulate_chain` निर्भर एडिट के एक अनुक्रम (एक फ़ंक्शन का नाम बदलना, सभी कॉलर्स को अपडेट करना, रिटर्न टाइप बदलना) का मूल्यांकन करता है और बताता है कि कौन-सा चरण पहले त्रुटि पैदा करता है।
 
-8 स्पेक्युलेटिव निष्पादन टूल। पूर्ण वर्कफ़्लो के लिए [docs/guide/speculative-execution.md](./docs/guide/speculative-execution.md) देखें।
+8 स्पेक्युलेटिव निष्पादन टूल। पूर्ण वर्कफ़्लो के लिए [docs/guide/speculative-execution.md](../../docs/guide/speculative-execution.md) देखें।
 
 ### टोकन बचत
 
-संरचित LSP प्रतिक्रियाएँ समान कार्यों पर grep/read की तुलना में **5-34 गुना कम टोकन** उपयोग करती हैं। HashiCorp Consul (3,19,000 लाइनें) पर, एक ब्लास्ट-रेडियस विश्लेषण grep के माध्यम से 17.7MB बनाम LSP के माध्यम से 841KB उपयोग करता है, जिससे 5,534 टूल कॉल घटकर 119 रह जाती हैं। बचत कोडबेस के आकार के साथ बढ़ती है। पाँच कोडबेस पर पूर्ण प्रयोग के लिए [docs/guide/token-savings.md](./docs/guide/token-savings.md) देखें।
+संरचित LSP प्रतिक्रियाएँ समान कार्यों पर grep/read की तुलना में **5-34 गुना कम टोकन** उपयोग करती हैं। HashiCorp Consul (3,19,000 लाइनें) पर, एक ब्लास्ट-रेडियस विश्लेषण grep के माध्यम से 17.7MB बनाम LSP के माध्यम से 841KB उपयोग करता है, जिससे 5,534 टूल कॉल घटकर 119 रह जाती हैं। बचत कोडबेस के आकार के साथ बढ़ती है। पाँच कोडबेस पर पूर्ण प्रयोग के लिए [docs/guide/token-savings.md](../../docs/guide/token-savings.md) देखें।
 
 ### टोकन-अनुकूलित आउटपुट (GCF)
 
@@ -106,7 +106,7 @@ agent-lsp की CI हर push पर वास्तविक फ़िक्�
 | Graph | blast_radius, find_callers, explore_symbol, find_references, type_hierarchy, cross_repo, detect_changes, list_symbols | **79-84%** |
 | Graph + सत्र डीडुप | वही, [gcf-proxy](https://github.com/blackwell-systems/gcf-proxy) `--session` के माध्यम से | **92.7%** (5वीं कॉल) |
 
-समूहीकृत/नेस्टेड प्रतिक्रियाएँ (सिंबल के तहत कॉलर्स, संबंधित जानकारी के साथ डायग्नोस्टिक्स) भी टेबुलराइज़ होती हैं, जो उस आकार पर JSON की तुलना में ~14% बचत देती हैं ([विवरण](./docs/guide/gcf-integration.md#nested-container-responses-grouped-data))।
+समूहीकृत/नेस्टेड प्रतिक्रियाएँ (सिंबल के तहत कॉलर्स, संबंधित जानकारी के साथ डायग्नोस्टिक्स) भी टेबुलराइज़ होती हैं, जो उस आकार पर JSON की तुलना में ~14% बचत देती हैं ([विवरण](../../docs/guide/gcf-integration.md#nested-container-responses-grouped-data))।
 
 GCF डिफ़ॉल्ट रूप से सक्षम है। JSON पर लौटने के लिए:
 
@@ -114,7 +114,7 @@ GCF डिफ़ॉल्ट रूप से सक्षम है। JSON प
 export AGENT_LSP_OUTPUT_FORMAT=json
 ```
 
-बेंचमार्क: `go run scripts/gcf-benchmark.go`. आर्किटेक्चर विवरण के लिए [docs/guide/gcf-integration.md](./docs/guide/gcf-integration.md) देखें।
+बेंचमार्क: `go run scripts/gcf-benchmark.go`. आर्किटेक्चर विवरण के लिए [docs/guide/gcf-integration.md](../../docs/guide/gcf-integration.md) देखें।
 
 **GCF:** [gcformat.com](https://gcformat.com) · [Spec](https://github.com/blackwell-systems/gcf) · [Go](https://github.com/blackwell-systems/gcf-go) · [Python](https://github.com/blackwell-systems/gcf-python) · [TypeScript](https://github.com/blackwell-systems/gcf-typescript) · [Playground](https://gcformat.com/playground.html)
 
@@ -134,7 +134,7 @@ Python और TypeScript परियोजनाओं को `find_references`
 
 जब एजेंट किसी स्किल को सक्रिय करता है, तो हर टूल कॉल की जाँच वर्तमान फ़ेज़ की अनुमतियों के विरुद्ध की जाती है। ब्लास्ट-रेडियस विश्लेषण के दौरान `apply_edit` कॉल करना चुपचाप आगे नहीं बढ़ता; यह विशिष्ट पुनर्प्राप्ति मार्गदर्शन के साथ एक त्रुटि लौटाता है ("पहले blast_radius फ़ेज़ पूरा करें, अनुमत टूल: [blast_radius, find_references]")। जैसे-जैसे एजेंट बाद के फ़ेज़ के टूल कॉल करता है, फ़ेज़ स्वचालित रूप से आगे बढ़ते हैं।
 
-कोई अन्य MCP टूल प्रदाता रनटाइम पर वर्कफ़्लो क्रम को प्रवर्तित नहीं करता। [docs/guide/phase-enforcement.md](./docs/guide/phase-enforcement.md) देखें।
+कोई अन्य MCP टूल प्रदाता रनटाइम पर वर्कफ़्लो क्रम को प्रवर्तित नहीं करता। [docs/guide/phase-enforcement.md](../../docs/guide/phase-enforcement.md) देखें।
 
 ### कॉनकरेंसी विश्लेषण
 
@@ -165,13 +165,13 @@ Python और TypeScript परियोजनाओं को `find_references`
 | [Cline](https://github.com/cline/cline) | stdio | `agent-lsp init` |
 | कोई भी MCP क्लाइंट | HTTP+SSE | `agent-lsp --http --port 8080` |
 
-कॉपी-पेस्ट कॉन्फ़िग के लिए [docs/getting-started/mcp-clients.md](./docs/getting-started/mcp-clients.md) देखें।
+कॉपी-पेस्ट कॉन्फ़िग के लिए [docs/getting-started/mcp-clients.md](../../docs/getting-started/mcp-clients.md) देखें।
 
 ## स्किल
 
 कच्चे टूल अनदेखे रह जाते हैं। स्किल उपयोग में आती हैं। हर स्किल सही टूल अनुक्रम को एन्कोड करती है ताकि वर्कफ़्लो वास्तव में बिना प्रति-प्रॉम्प्ट ऑर्केस्ट्रेशन निर्देशों के घटित हों। स्किल [AgentSkills](https://github.com/anthropics/agent-skills) स्लैश कमांड के रूप में और किसी भी MCP क्लाइंट के लिए `prompts/list` / `prompts/get` के माध्यम से MCP प्रॉम्प्ट के रूप में उपलब्ध हैं।
 
-पूर्ण विवरण और उपयोग मार्गदर्शन के लिए [docs/guide/skills.md](./docs/guide/skills.md) देखें।
+पूर्ण विवरण और उपयोग मार्गदर्शन के लिए [docs/guide/skills.md](../../docs/guide/skills.md) देखें।
 
 **कुछ भी बदलने से पहले**
 
@@ -257,7 +257,7 @@ docker run --rm \
   --http --port 8080 go:gopls
 ```
 
-इमेज डिफ़ॉल्ट रूप से नॉन-रूट उपयोगकर्ता (uid 65532) के रूप में चलती हैं। `AGENT_LSP_TOKEN` को एनवायरनमेंट वेरिएबल के माध्यम से सेट करें, कभी भी कमांड लाइन पर `--token` से नहीं। इमेज Docker Hub (`blackwellsystems/agent-lsp`) पर भी मिरर की जाती हैं। पूर्ण टैग सूची, HTTP मोड सेटअप, और सुरक्षा सुदृढ़ीकरण विकल्पों के लिए [DOCKER.md](./DOCKER.md) देखें।
+इमेज डिफ़ॉल्ट रूप से नॉन-रूट उपयोगकर्ता (uid 65532) के रूप में चलती हैं। `AGENT_LSP_TOKEN` को एनवायरनमेंट वेरिएबल के माध्यम से सेट करें, कभी भी कमांड लाइन पर `--token` से नहीं। इमेज Docker Hub (`blackwellsystems/agent-lsp`) पर भी मिरर की जाती हैं। पूर्ण टैग सूची, HTTP मोड सेटअप, और सुरक्षा सुदृढ़ीकरण विकल्पों के लिए [DOCKER.md](../../DOCKER.md) देखें।
 
 ## सेटअप
 
@@ -318,7 +318,7 @@ go install github.com/blackwell-systems/agent-lsp/cmd/agent-lsp@latest
 | C / C++ | `clangd` | `apt install clangd` / `brew install llvm` |
 | Ruby | `solargraph` | `gem install solargraph` |
 
-32 समर्थित भाषाओं की पूर्ण सूची [docs/reference/language-support.md](./docs/reference/language-support.md) में।
+32 समर्थित भाषाओं की पूर्ण सूची [docs/reference/language-support.md](../../docs/reference/language-support.md) में।
 
 ### चरण 3: सेटअप सत्यापित करें
 
@@ -326,7 +326,7 @@ go install github.com/blackwell-systems/agent-lsp/cmd/agent-lsp@latest
 agent-lsp doctor
 ```
 
-प्रत्येक कॉन्फ़िगर किए गए लैंग्वेज सर्वर की जाँच करता है और क्षमताओं की रिपोर्ट देता है। आगे बढ़ने से पहले किसी भी विफलता को ठीक करें। इंस्टॉल कमांड और सर्वर-विशिष्ट नोट्स के लिए [भाषा समर्थन](./docs/reference/language-support.md) देखें।
+प्रत्येक कॉन्फ़िगर किए गए लैंग्वेज सर्वर की जाँच करता है और क्षमताओं की रिपोर्ट देता है। आगे बढ़ने से पहले किसी भी विफलता को ठीक करें। इंस्टॉल कमांड और सर्वर-विशिष्ट नोट्स के लिए [भाषा समर्थन](../../docs/reference/language-support.md) देखें।
 
 ### चरण 4: अपना AI टूल कॉन्फ़िगर करें
 
@@ -382,7 +382,7 @@ Claude Code के लिए, अपनी अनुमति allow सूची
 
 इसके बिना, Claude Code हर टूल कॉल पर अनुमति के लिए प्रॉम्प्ट करेगा। अन्य MCP क्लाइंट अनुमतियाँ अलग तरह से संभालते हैं; अपने क्लाइंट के दस्तावेज़ जाँचें।
 
-स्किल बहु-टूल वर्कफ़्लो हैं जो विश्वसनीय प्रक्रियाओं को एन्कोड करती हैं: एडिट से पहले ब्लास्ट-रेडियस जाँच, लेखन से पहले स्पेक्युलेटिव पूर्वावलोकन, बदलाव के बाद टेस्ट रन। पूर्ण सूची के लिए [docs/guide/skills.md](./docs/guide/skills.md) देखें।
+स्किल बहु-टूल वर्कफ़्लो हैं जो विश्वसनीय प्रक्रियाओं को एन्कोड करती हैं: एडिट से पहले ब्लास्ट-रेडियस जाँच, लेखन से पहले स्पेक्युलेटिव पूर्वावलोकन, बदलाव के बाद टेस्ट रन। पूर्ण सूची के लिए [docs/guide/skills.md](../../docs/guide/skills.md) देखें।
 
 ### चरण 7: काम शुरू करें
 
@@ -426,30 +426,30 @@ start_lsp(root_dir="/your/project")
 
 Go, Python, TypeScript, Rust, Java, C, C++, C#, Ruby, PHP, Kotlin, Swift, Scala, Zig, Lua, Elixir, Gleam, Clojure, Dart, Terraform, Nix, Prisma, SQL, MongoDB, JavaScript, YAML, JSON, Dockerfile, CSS, HTML, MQL।
 
-पूर्ण कवरेज मैट्रिक्स के लिए [docs/reference/language-support.md](./docs/reference/language-support.md) देखें।
+पूर्ण कवरेज मैट्रिक्स के लिए [docs/reference/language-support.md](../../docs/reference/language-support.md) देखें।
 
 ## टूल
 
 65 टूल जो नेविगेशन, विश्लेषण, रीफ़ैक्टरिंग, सिंबल एडिटिंग, कंपोज़िट एक्सप्लोरेशन, सुरक्षित एडिटिंग, स्पेक्युलेटिव निष्पादन, और सत्र जीवनचक्र को कवर करते हैं। सभी CI-सत्यापित।
 
-पैरामीटर और उदाहरणों के साथ पूर्ण संदर्भ के लिए [docs/reference/tools.md](./docs/reference/tools.md) देखें।
+पैरामीटर और उदाहरणों के साथ पूर्ण संदर्भ के लिए [docs/reference/tools.md](../../docs/reference/tools.md) देखें।
 
 ## आगे पढ़ें
 
 ### दस्तावेज़
 
-- [टूल संदर्भ](./docs/reference/tools.md): पैरामीटर और उदाहरणों के साथ पूर्ण टूल संदर्भ
-- [स्किल संदर्भ](./docs/guide/skills.md): स्किल संदर्भ, वर्कफ़्लो, उपयोग के मामले, और संयोजन
-- [भाषा समर्थन](./docs/reference/language-support.md): भाषा कवरेज मैट्रिक्स
-- [आर्किटेक्चर](./docs/architecture/architecture.md): सिस्टम डिज़ाइन और आंतरिक कार्य
-- [स्पेक्युलेटिव निष्पादन](./docs/guide/speculative-execution.md): सिमुलेट-फिर-लागू करें वर्कफ़्लो
-- [LSP अनुरूपता](./docs/reference/lsp-conformance.md): LSP 3.17 स्पेक कवरेज
-- [Docker](./DOCKER.md): Docker टैग, compose, और वॉल्यूम कैशिंग
+- [टूल संदर्भ](../../docs/reference/tools.md): पैरामीटर और उदाहरणों के साथ पूर्ण टूल संदर्भ
+- [स्किल संदर्भ](../../docs/guide/skills.md): स्किल संदर्भ, वर्कफ़्लो, उपयोग के मामले, और संयोजन
+- [भाषा समर्थन](../../docs/reference/language-support.md): भाषा कवरेज मैट्रिक्स
+- [आर्किटेक्चर](../../docs/architecture/architecture.md): सिस्टम डिज़ाइन और आंतरिक कार्य
+- [स्पेक्युलेटिव निष्पादन](../../docs/guide/speculative-execution.md): सिमुलेट-फिर-लागू करें वर्कफ़्लो
+- [LSP अनुरूपता](../../docs/reference/lsp-conformance.md): LSP 3.17 स्पेक कवरेज
+- [Docker](../../DOCKER.md): Docker टैग, compose, और वॉल्यूम कैशिंग
 
 ### योगदान
 
-- [CI नोट्स](./docs/architecture/ci-notes.md): CI विशेषताएँ और टेस्ट हार्नेस विवरण
-- [वितरण](./docs/architecture/distribution.md): इंस्टॉल चैनल और रिलीज़ पाइपलाइन
+- [CI नोट्स](../../docs/architecture/ci-notes.md): CI विशेषताएँ और टेस्ट हार्नेस विवरण
+- [वितरण](../../docs/architecture/distribution.md): इंस्टॉल चैनल और रिलीज़ पाइपलाइन
 
 ## विकास
 
@@ -474,7 +474,7 @@ defer client.Shutdown(ctx)
 locs, err := client.GetDefinition(ctx, fileURI, lsp.Position{Line: 10, Character: 4})
 ```
 
-पूर्ण पैकेज API के लिए [docs/architecture/architecture.md](./docs/architecture/architecture.md) देखें।
+पूर्ण पैकेज API के लिए [docs/architecture/architecture.md](../../docs/architecture/architecture.md) देखें।
 
 ## लाइसेंस
 
