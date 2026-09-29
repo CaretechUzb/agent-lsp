@@ -271,7 +271,13 @@ jobs:
 
       - name: Install mcp-publisher
         run: |
-          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          # Pinned with a checksum, not releases/latest, so a new publisher release
+          # cannot change release behavior unannounced. Bump both together.
+          MCP_PUBLISHER_VERSION=v1.8.1
+          MCP_PUBLISHER_SHA256=a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz" -o /tmp/mcp-publisher.tar.gz
+          echo "${MCP_PUBLISHER_SHA256}  /tmp/mcp-publisher.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/mcp-publisher.tar.gz mcp-publisher
           sudo mv mcp-publisher /usr/local/bin/
 
       - name: Update server.json version
