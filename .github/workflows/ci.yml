@@ -70,11 +70,16 @@ jobs:
 
       - name: Install kotlin-language-server
         continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          KLS_VERSION=$(curl -fsSL -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/fwcd/kotlin-language-server/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          # Pinned with a checksum, not "releases/latest": the Tier-2 baseline is
+          # derived from a specific server version (see the multi-lang-mql job).
+          # Upstream publishes no checksums; this is the sha256 of the release
+          # asset CI was already running. Bump both fields together after
+          # re-verifying the Kotlin baseline against the new release.
+          KLS_VERSION=1.3.13
+          KLS_SHA256=4fe7d71d087b307c7869036171bd9d8c6a4284cd7c25b89098b0a24eb2d9b6d2
           wget -q "https://github.com/fwcd/kotlin-language-server/releases/download/${KLS_VERSION}/server.zip" -O /tmp/kls.zip
+          echo "${KLS_SHA256}  /tmp/kls.zip" | sha256sum -c -
           sudo unzip -q /tmp/kls.zip -d /opt/kls
           sudo ln -sf /opt/kls/server/bin/kotlin-language-server /usr/local/bin/kotlin-language-server
 
@@ -254,12 +259,16 @@ jobs:
         run: GOWORK=off go build ./...
 
       - name: Install lua-language-server
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          LLS_VERSION=$(curl -fsSL -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/LuaLS/lua-language-server/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          # Pinned with a checksum, not "releases/latest" (see the multi-lang-mql
+          # job). Upstream publishes no checksums; this is the sha256 of the
+          # release asset CI was already running. Bump both fields together after
+          # re-verifying the Lua baseline against the new release.
+          LLS_VERSION=3.19.1
+          LLS_SHA256=e9235d2d72ef55bc41cf8c99cda2ed64777682024b4bb81f5dea425060c5cbb8
           echo "Installing lua-language-server ${LLS_VERSION}"
           wget -q "https://github.com/LuaLS/lua-language-server/releases/download/${LLS_VERSION}/lua-language-server-${LLS_VERSION}-linux-x64.tar.gz" -O /tmp/lls.tar.gz
+          echo "${LLS_SHA256}  /tmp/lls.tar.gz" | sha256sum -c -
           sudo mkdir -p /opt/lls
           sudo tar -xzf /tmp/lls.tar.gz -C /opt/lls
           sudo ln -sf /opt/lls/bin/lua-language-server /usr/local/bin/lua-language-server
