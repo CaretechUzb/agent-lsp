@@ -1431,6 +1431,16 @@ func (c *LSPClient) HasPublishedDiagnostics(uri string) bool {
 	return ok
 }
 
+// ResetDiagnostics removes the cached diagnostics for uri. Use it before an
+// operation that should re-derive the document's diagnostics (for example
+// ReopenDocument after an edit), so a subsequent wait and read observe only
+// freshly published notifications instead of a stale cached publication.
+func (c *LSPClient) ResetDiagnostics(uri string) {
+	c.diagMu.Lock()
+	defer c.diagMu.Unlock()
+	delete(c.diags, NormalizeFileURI(uri))
+}
+
 // GetAllDiagnostics returns a copy of all diagnostics.
 func (c *LSPClient) GetAllDiagnostics() map[string][]types.LSPDiagnostic {
 	c.diagMu.RLock()

@@ -616,3 +616,37 @@ func TestWriteRawAfterProcessExit(t *testing.T) {
 		t.Errorf("error %q should not leak the low-level closed-pipe error", err.Error())
 	}
 }
+
+// TestResetDiagnostics verifies that ResetDiagnostics removes the cached
+// diagnostics for the URI (including under its normalized form), so post-edit
+// verification observes only freshly published notifications. (issue #44
+// review follow-up)
+func TestResetDiagnostics(t *testing.T) {
+	c, _, _ := newTestClient(t)
+	uri := "file:///some/file.go"
+
+	c.diagMu.Lock()
+	c.diags[uri] = []types.LSPDiagnostic{{Severity: 1}}
+	c.diagMu.Unlock()
+
+	if !c.HasPublishedDiagnostics(uri) {
+		t.Fatal("expected cached diagnostics before reset")
+	}
+
+	c.ResetDiagnostics(uri)
+	if c.HasPublishedDiagnostics(uri) {
+		t.Error("expected cached diagnostics to be removed after ResetDiagnostics")
+	}
+	if got := c.GetDiagnostics(uri); len(got) != 0 {
+		t.Errorf("expected empty diagnostics after reset, got %d", len(got))
+	}
+
+	// The normalized form of the URI must be cleared too.
+	c.diagMu.Lock()
+	c.diags[NormalizeFileURI(uri)] = []types.LSPDiagnostic{{Severity: 2}}
+	c.diagMu.Unlock()
+	c.ResetDiagnostics(uri)
+	if c.HasPublishedDiagnostics(uri) {
+		t.Error("expected normalized cached diagnostics to be removed after ResetDiagnostics")
+	}
+}
