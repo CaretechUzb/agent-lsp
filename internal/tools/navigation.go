@@ -101,10 +101,18 @@ func HandleGetReferences(ctx context.Context, client *lsp.LSPClient, args map[st
 		return res, err
 	}
 	if len(locs) == 0 {
-		return appendHint(res, "This symbol may be dead code. Use /lsp-dead-code to verify."), nil
+		return appendHint(res, referencesEmptyHint), nil
 	}
 	return appendHint(res, "Use blast_radius for blast radius with test/non-test partitioning."), nil
 }
+
+// referencesEmptyHint qualifies an empty find_references result. An empty
+// result has at least two causes — the symbol is genuinely unreferenced, or
+// the language server could not resolve references for this position (index
+// state, cross-file limitations, servers that only index opened documents).
+// The unconditional dead-code claim was a false positive pushing agents toward
+// deleting used code. (issue #40)
+const referencesEmptyHint = "No references found. This may be dead code, or the language server could not resolve references for this position — use /lsp-dead-code to verify."
 
 // HandleGoToDefinition finds the definition of the symbol at the given location.
 func HandleGoToDefinition(ctx context.Context, client *lsp.LSPClient, args map[string]any) (types.ToolResult, error) {

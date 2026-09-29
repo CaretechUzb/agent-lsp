@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/blackwell-systems/agent-lsp/internal/types"
@@ -62,5 +63,20 @@ func TestAppendHint_NoContentItems(t *testing.T) {
 
 	if len(got.Content) != 0 {
 		t.Errorf("appendHint() with no content items should return unchanged, got %d items", len(got.Content))
+	}
+}
+
+// TestReferencesEmptyHint_Qualified asserts the empty-result hint names both
+// causes (dead code vs unresolved references) instead of asserting dead code
+// unconditionally. (issue #40)
+func TestReferencesEmptyHint_Qualified(t *testing.T) {
+	if !strings.Contains(referencesEmptyHint, "dead code") {
+		t.Errorf("referencesEmptyHint should still mention dead code, got %q", referencesEmptyHint)
+	}
+	if !strings.Contains(referencesEmptyHint, "could not resolve references") {
+		t.Errorf("referencesEmptyHint should name the unresolved-references cause, got %q", referencesEmptyHint)
+	}
+	if !strings.Contains(referencesEmptyHint, "/lsp-dead-code") {
+		t.Errorf("referencesEmptyHint should keep the /lsp-dead-code pointer, got %q", referencesEmptyHint)
 	}
 }
