@@ -7,11 +7,13 @@ package skills
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 //go:embed */SKILL.md */references/*.md
@@ -36,6 +38,11 @@ func Install(dest string) (int, error) {
 			return nil // no top-level loose files; skills are directories
 		}
 		target := filepath.Join(dest, filepath.FromSlash(p))
+		// Check before MkdirAll, which would follow an existing symlinked
+		// directory and create the rest of the path under its target.
+		if err := rejectSymlinkedDirs(dest, filepath.Dir(target)); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
@@ -77,10 +84,49 @@ func writeFileManaged(target string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmpName, 0o600); err != nil {
+	// os.CreateTemp creates the file 0600; skill files are not secret and the
+	// project target (.agents/skills) is meant to be committed and read by
+	// other tools, so match the 0644 the other generated files use.
+	if err := os.Chmod(tmpName, 0o644); err != nil {
 		return err
 	}
 	return os.Rename(tmpName, target)
+}
+
+// rejectSymlinkedDirs returns an error if any existing directory strictly
+// below dest on the way to dir is a symlink. Rejecting only a symlink at the
+// final file path is not enough: a project-controlled tree can ship
+// .agents/skills/lsp-docs as a symlinked directory, and MkdirAll, CreateTemp
+// and Rename would all follow it and write SKILL.md into the link's target.
+// dest itself may be a symlink (users symlink ~/.claude/skills to dotfiles),
+// so only the components below it are checked. Components that do not exist
+// yet are created by MkdirAll as real directories, so the walk stops there.
+func rejectSymlinkedDirs(dest, dir string) error {
+	rel, err := filepath.Rel(dest, dir)
+	if err != nil {
+		return err
+	}
+	if rel == "." {
+		return nil
+	}
+	cur := dest
+	for part := range strings.SplitSeq(rel, string(filepath.Separator)) {
+		cur = filepath.Join(cur, part)
+		fi, err := os.Lstat(cur)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to write through symlinked directory at managed skill path %s", cur)
+		}
+		if !fi.IsDir() {
+			return fmt.Errorf("managed skill path %s exists and is not a directory", cur)
+		}
+	}
+	return nil
 }
 
 // Names returns the sorted names of the embedded top-level skill directories:
