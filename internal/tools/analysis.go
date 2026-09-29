@@ -211,19 +211,21 @@ func classifyDiagnosticsChannel(client *lsp.LSPClient, uris []string, pullLive m
 	return deadURIs, liveCount
 }
 
-// pullDiagnosticsEnabled reports whether the pull fallback is enabled. It is
-// OPT-IN via AGENT_LSP_PULL_DIAGNOSTICS (1/true/yes/on) because at least one
-// server's pull method currently hangs AND wedges the server (observed with
-// mql-lsp-server v2.4.2, upstream davalillo/mql-language-server#91): the
-// client-side timeout bounds the wait, but the wedged server then fails every
-// subsequent request in the session. The default can flip to enabled once that
-// upstream fix lands in a pinned release. (issue #43)
+// pullDiagnosticsEnabled reports whether the pull fallback is enabled. The
+// default is ENABLED: the one server whose pull method hung and wedged the
+// process (observed with mql-lsp-server v2.4.2, upstream
+// davalillo/mql-language-server#91) fixed it in v2.5.0 — verified end-to-end
+// (textDocument/diagnostic answers, the server survives subsequent requests,
+// and the MQL Tier-2 harness passes with the fallback on) — and the CI pin now
+// references that release. It can be forced off via
+// AGENT_LSP_PULL_DIAGNOSTICS=0 (0/false/no/off) for servers whose pull
+// implementation is still broken. (issue #43)
 var pullDiagnosticsEnabled = func() bool {
 	switch strings.ToLower(os.Getenv("AGENT_LSP_PULL_DIAGNOSTICS")) {
-	case "1", "true", "yes", "on":
-		return true
+	case "0", "false", "no", "off":
+		return false
 	}
-	return false
+	return true
 }
 
 // shouldAttemptPull reports whether get_diagnostics should issue a
