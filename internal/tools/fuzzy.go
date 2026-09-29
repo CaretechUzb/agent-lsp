@@ -22,7 +22,11 @@ import (
 // position they cannot resolve with the *containing* symbol (observed with
 // mql-lsp-server v2.4.2). Resolving the fallback through that name would then
 // answer a different question than the one asked and return a confidently wrong
-// result (issue #39).
+// result (issue #40).
+//
+// rootDir is the workspace root; the fallback re-reads the source line from
+// disk, so the converted path is re-validated against it at the filesystem
+// boundary (see sourceLineAtFile).
 //
 // line and col are 1-indexed (tool convention); converted internally to 0-indexed.
 func fuzzyPositionFallback(
@@ -30,6 +34,7 @@ func fuzzyPositionFallback(
 	client *lsp.LSPClient,
 	fileURI string,
 	line, col int,
+	rootDir string,
 	lookupFn func(pos types.Position) ([]types.Location, error),
 ) (locs []types.Location, used bool, err error) {
 	hoverPos := types.Position{Line: line - 1, Character: col - 1}
@@ -39,7 +44,7 @@ func fuzzyPositionFallback(
 		return nil, false, nil
 	}
 
-	lineText, ok := sourceLineAtFile(fileURI, line)
+	lineText, ok := sourceLineAtFile(fileURI, line, client.RootDir())
 	if !ok {
 		logging.Log(logging.LevelDebug, "fuzzyFallback: could not read source line, skipping")
 		return nil, false, nil
@@ -47,7 +52,7 @@ func fuzzyPositionFallback(
 
 	symbolName, proceed := fuzzyFallbackDecision(hoverText, lineText, col)
 	if !proceed {
-		queried, _ := identifierAtFilePosition(fileURI, line, col)
+		queried, _ := identifierAtFilePosition(fileURI, line, col, client.RootDir())
 		logging.Log(logging.LevelDebug, "fuzzyFallback: hover symbol "+symbolName+" does not match identifier "+queried+" at position; skipping")
 		return nil, false, nil
 	}
@@ -82,7 +87,7 @@ func fuzzyPositionFallback(
 // identifier that sits at the queried position: some servers return the
 // *containing* symbol when cursor resolution fails, and resolving the
 // fallback through that name would answer a different question than the one
-// asked (issue #39). Returns the extracted symbol name and whether the
+// asked (issue #40). Returns the extracted symbol name and whether the
 // fallback may proceed. col is 1-indexed, consistent with the tool layer.
 func fuzzyFallbackDecision(hoverText, lineText string, col int) (symbolName string, proceed bool) {
 	symbolName = extractSymbolName(hoverText)
@@ -99,15 +104,16 @@ func fuzzyFallbackDecision(hoverText, lineText string, col int) (symbolName stri
 	return symbolName, true
 }
 
-// identifierInLine extracts the identifier token at the 1-indexed column col
-// of a single source line, walking left from col to the token start. Returns
-// ("", false) when the line has no identifier at that position.
+// identifierInLine extracts the identifier token at the 1-indexed UTF-16 code
+// unit column col of a single source line, walking left from col to the token
+// start. Tool-layer columns follow the LSP position convention (UTF-16 code
+// units), so the column is converted to a byte offset before indexing the Go
+// string; a byte-index read would land mid-rune for lines with non-ASCII
+// prefixes and reject a valid identifier. Returns ("", false) when the line
+// has no identifier at that position.
 func identifierInLine(lineText string, col int) (string, bool) {
-	if col < 1 || col > len(lineText) {
-		return "", false
-	}
-	i := col - 1
-	if !isIdentifierChar(lineText[i]) {
+	i, ok := utf16ColToByteOffset(lineText, col)
+	if !ok || i >= len(lineText) || !isIdentifierChar(lineText[i]) {
 		return "", false
 	}
 	start := i
@@ -119,6 +125,36 @@ func identifierInLine(lineText string, col int) (string, bool) {
 		end++
 	}
 	return lineText[start:end], true
+}
+
+// utf16ColToByteOffset converts a 1-indexed UTF-16 code-unit column (the LSP
+// position convention) to a 0-indexed byte offset within s, counting surrogate
+// pairs and multi-byte runes the way an LSP server does. Returns ok=false when
+// the column is before the start or beyond the end of s.
+func utf16ColToByteOffset(s string, col int) (int, bool) {
+	if col < 1 {
+		return 0, false
+	}
+	units := 0
+	for i, r := range s {
+		if units == col-1 {
+			return i, true
+		}
+		if r > 0xFFFF {
+			units += 2
+		} else {
+			units++
+		}
+		if units > col-1 {
+			// The column points into the middle of a rune (e.g. the second
+			// half of a surrogate pair): not a valid character boundary.
+			return 0, false
+		}
+	}
+	if units == col-1 {
+		return len(s), true
+	}
+	return 0, false
 }
 
 // isIdentifierChar reports whether b may appear in an identifier: an ASCII
@@ -133,9 +169,11 @@ func isIdentifierChar(b byte) bool {
 
 // identifierAtFilePosition reads the source line at (line, col) (both
 // 1-indexed) from the file behind fileURI and extracts the identifier there.
+// rootDir must be the workspace root: the converted path is re-validated
+// against it immediately before the read (see sourceLineAtFile).
 // Returns ("", false) on read errors or out-of-range positions.
-func identifierAtFilePosition(fileURI string, line, col int) (string, bool) {
-	lineText, ok := sourceLineAtFile(fileURI, line)
+func identifierAtFilePosition(fileURI string, line, col int, rootDir string) (string, bool) {
+	lineText, ok := sourceLineAtFile(fileURI, line, rootDir)
 	if !ok {
 		return "", false
 	}
@@ -143,8 +181,13 @@ func identifierAtFilePosition(fileURI string, line, col int) (string, bool) {
 }
 
 // sourceLineAtFile reads the 1-indexed source line from the file behind
-// fileURI. Returns ("", false) on read errors or out-of-range line numbers.
-func sourceLineAtFile(fileURI string, line int) (string, bool) {
+// fileURI. rootDir must be the workspace root: WithDocument validates the
+// caller's path before opening the document, but the file may be swapped (or a
+// path alias re-pointed) between that validation and this read, so the
+// converted path is validated again here, at the filesystem boundary, before
+// os.ReadFile. Returns ("", false) on validation or read errors and
+// out-of-range line numbers.
+func sourceLineAtFile(fileURI string, line int, rootDir string) (string, bool) {
 	if line < 1 {
 		return "", false
 	}
@@ -152,7 +195,11 @@ func sourceLineAtFile(fileURI string, line int) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	data, err := os.ReadFile(path)
+	valid, err := ValidateFilePath(path, rootDir)
+	if err != nil {
+		return "", false
+	}
+	data, err := os.ReadFile(valid)
 	if err != nil {
 		return "", false
 	}

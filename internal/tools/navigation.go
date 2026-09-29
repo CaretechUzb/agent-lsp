@@ -91,7 +91,7 @@ func HandleGetReferences(ctx context.Context, client *lsp.LSPClient, args map[st
 	fallbackUsed := false
 	if len(locs) == 0 {
 		var fLocs []types.Location
-		fLocs, fallbackUsed, wErr = fuzzyPositionFallback(ctx, client, fileURI, line, col, func(pos types.Position) ([]types.Location, error) {
+		fLocs, fallbackUsed, wErr = fuzzyPositionFallback(ctx, client, fileURI, line, col, client.RootDir(), func(pos types.Position) ([]types.Location, error) {
 			return client.GetReferences(ctx, fileURI, pos, includeDecl)
 		})
 		if wErr != nil {
@@ -114,7 +114,7 @@ func HandleGetReferences(ctx context.Context, client *lsp.LSPClient, args map[st
 
 // fuzzyFallbackProvenanceHint marks results that the tool could not resolve
 // directly and instead produced via the fuzzy position fallback, so agents can
-// distrust them accordingly. (issue #39)
+// distrust them accordingly. (issue #40)
 const fuzzyFallbackProvenanceHint = "Result produced via fuzzy position fallback — verify the symbol identity before use."
 
 // HandleGoToDefinition finds the definition of the symbol at the given location.
@@ -149,7 +149,7 @@ func HandleGoToDefinition(ctx context.Context, client *lsp.LSPClient, args map[s
 	fallbackUsed := false
 	if len(locs) == 0 {
 		var fLocs []types.Location
-		fLocs, fallbackUsed, wErr = fuzzyPositionFallback(ctx, client, fileURI, line, col, func(pos types.Position) ([]types.Location, error) {
+		fLocs, fallbackUsed, wErr = fuzzyPositionFallback(ctx, client, fileURI, line, col, client.RootDir(), func(pos types.Position) ([]types.Location, error) {
 			return client.GetDefinition(ctx, fileURI, pos)
 		})
 		if wErr != nil {
