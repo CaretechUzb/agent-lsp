@@ -108,6 +108,29 @@ type jsonrpcError struct {
 	Message string `json:"message"`
 }
 
+// RPCError is a JSON-RPC error response returned by the server for an
+// outstanding request. The Error() text is unchanged from the historical
+// format, but the typed code lets callers distinguish specific server
+// answers (for example a missing method) from transport failures.
+type RPCError struct {
+	Code    int
+	Message string
+}
+
+func (e *RPCError) Error() string {
+	return fmt.Sprintf("lsp error %d: %s", e.Code, e.Message)
+}
+
+// IsMethodNotFound reports whether err is the server's JSON-RPC -32601
+// (method not found) response. A server may advertise a capability in
+// initialize or via client/registerCapability without implementing the
+// corresponding method; callers use this to fall back to an honest
+// "unsupported" answer instead of failing the tool call.
+func IsMethodNotFound(err error) bool {
+	var rpcErr *RPCError
+	return errors.As(err, &rpcErr) && rpcErr.Code == -32601
+}
+
 // pendingRequest holds the reply channel for an outgoing request.
 type pendingRequest struct {
 	ch  chan json.RawMessage
@@ -139,11 +162,19 @@ type LSPClient struct {
 	frameReader *FrameReader
 	nextID      atomic.Int64
 
+	// procDone is closed by the current subprocess's exit monitor once that
+	// process has exited and the monitor has finished updating client state.
+	// It is the only way to wait for the process: the monitor is the sole
+	// caller of cmd.Wait (exec.Cmd.Wait must not be called concurrently).
+	// Guarded by c.mu; replaced on every start().
+	procDone chan struct{}
+
 	initialized bool
 
 	// exited is set to true by the process-exit monitor goroutine once the
 	// subprocess has exited. Guarded by c.mu. Distinguishes an exited client
 	// (stdin nulled because the process died) from one that was never started.
+	// Reset by start() so a restarted client does not inherit it.
 	exited bool
 
 	// daemon mode fields
@@ -287,7 +318,7 @@ func NewDaemonClient(info *DaemonInfo) (*LSPClient, error) {
 	}
 
 	// Start reading responses from the socket.
-	go c.readLoop()
+	go c.readLoop(c.frameReader)
 
 	return c, nil
 }
@@ -318,7 +349,7 @@ func NewPassiveClient(addr string) (*LSPClient, error) {
 	c.nextID.Store(0)
 	c.progressCond = sync.NewCond(&c.progressMu)
 
-	go c.readLoop()
+	go c.readLoop(c.frameReader)
 
 	return c, nil
 }
@@ -387,29 +418,49 @@ func (c *LSPClient) start() error {
 
 	logging.Log(logging.LevelInfo, fmt.Sprintf("LSP server started: %s (PID %d)", c.serverPath, cmd.Process.Pid))
 
+	fr := NewFrameReader(stdout)
+	done := make(chan struct{})
+	c.mu.Lock()
 	c.cmd = cmd
 	c.stdin = stdin
-	c.frameReader = NewFrameReader(stdout)
+	c.frameReader = fr
+	c.procDone = done
+	c.exited = false
+	c.mu.Unlock()
 
 	go c.drainStderr(stderr)
-	go c.readLoop()
+	go c.readLoop(fr)
 
-	// Monitor process exit.
+	// Monitor process exit. This goroutine belongs to this process only: after
+	// a Restart the client fields describe a newer process, and touching them
+	// here cut the new server's stdin and rejected its pending initialize
+	// request ("lsp process exited"), which made restart_lsp_server flaky.
 	startTime := time.Now()
 	go func() {
+		// Close done last, after any state update, so Shutdown (and therefore
+		// Restart) cannot start a new process while this goroutine still runs.
+		defer close(done)
 		err := cmd.Wait()
 		uptime := time.Since(startTime).Round(time.Second)
-		exitErr := fmt.Errorf("lsp process exited: %w", err)
-		c.rejectPending(exitErr)
+		exitErr := errors.New("lsp process exited")
+		if err != nil {
+			exitErr = fmt.Errorf("lsp process exited: %w", err)
+		}
 		c.mu.Lock()
-		c.initialized = false
-		c.exited = true
-		// Null out stdin so later writeRaw calls return a clear "process has
-		// exited" error instead of writing to a closed pipe. Do not Close it
-		// here: the process already exited (pipe is closed) and Shutdown may
-		// also close it, so nulling the reference avoids a double-close race.
-		c.stdin = nil
+		current := c.cmd == cmd
+		if current {
+			c.initialized = false
+			c.exited = true
+			// Null out stdin so later writeRaw calls return a clear "process has
+			// exited" error instead of writing to a closed pipe. Do not Close it
+			// here: the process already exited (pipe is closed) and Shutdown may
+			// also close it, so nulling the reference avoids a double-close race.
+			c.stdin = nil
+		}
 		c.mu.Unlock()
+		if current {
+			c.rejectPending(exitErr)
+		}
 		if err != nil {
 			c.stderrMu.Lock()
 			buf := string(c.stderrBuf)
@@ -444,19 +495,29 @@ func (c *LSPClient) drainStderr(r io.Reader) {
 }
 
 // readLoop reads and dispatches all incoming messages.
-func (c *LSPClient) readLoop() {
+func (c *LSPClient) readLoop(fr *FrameReader) {
 	defer func() {
 		if r := recover(); r != nil {
 			logging.Log(logging.LevelError, fmt.Sprintf("readLoop panic: %v\n%s", r, debug.Stack()))
 		}
 	}()
+	// fr is this loop's own reader. Re-reading c.frameReader on each iteration
+	// let a previous process's loop switch to a restarted server's reader and
+	// consume its messages concurrently with the new loop (FrameReader is not
+	// safe for concurrent use), so responses went missing and requests timed out.
 	for {
-		raw, err := c.frameReader.ReadMessage()
+		raw, err := fr.ReadMessage()
 		if err != nil {
 			if err != io.EOF {
 				logging.Log(logging.LevelDebug, "LSP read loop ended: "+err.Error())
 			}
 			return
+		}
+		c.mu.Lock()
+		current := c.frameReader == fr
+		c.mu.Unlock()
+		if !current {
+			return // a restart replaced this connection; drop its late messages
 		}
 		c.dispatch(raw)
 	}
@@ -482,7 +543,7 @@ func (c *LSPClient) dispatch(raw []byte) {
 			c.pendingMu.Unlock()
 			if ok {
 				if msg.Error != nil {
-					req.err <- fmt.Errorf("lsp error %d: %s", msg.Error.Code, msg.Error.Message)
+					req.err <- &RPCError{Code: msg.Error.Code, Message: msg.Error.Message}
 				} else {
 					req.ch <- msg.Result
 				}
@@ -570,7 +631,8 @@ func (c *LSPClient) dispatch(raw []byte) {
 		// references, hover) lazily after workspace import completes.
 		var reg struct {
 			Registrations []struct {
-				Method string `json:"method"`
+				Method          string          `json:"method"`
+				RegisterOptions json.RawMessage `json:"registerOptions"`
 			} `json:"registrations"`
 		}
 		if err := json.Unmarshal(msg.Params, &reg); err == nil {
@@ -579,8 +641,18 @@ func (c *LSPClient) dispatch(raw []byte) {
 				// Map LSP method to capability key (e.g. "textDocument/documentSymbol" → "documentSymbolProvider")
 				capKey := methodToCapabilityKey(r.Method)
 				if capKey != "" {
-					c.capabilities[capKey] = true
-					logging.Log(logging.LevelDebug, fmt.Sprintf("dynamic capability registered: %s → %s", r.Method, capKey))
+					existing := c.capabilities[capKey]
+					c.capabilities[capKey] = mergeRegisteredCapability(existing, capKey, r.RegisterOptions)
+					// Log whether the registration merged options, kept an existing
+					// options object, or simply set the capability to true. (issue #37)
+					action := "set-true"
+					trimmed := strings.TrimSpace(string(r.RegisterOptions))
+					if trimmed != "" && trimmed != "null" {
+						action = "merged"
+					} else if _, ok := existing.(map[string]any); ok {
+						action = "kept"
+					}
+					logging.Log(logging.LevelDebug, fmt.Sprintf("dynamic capability registered: %s → %s (%s)", r.Method, capKey, action))
 				}
 			}
 			c.capsMu.Unlock()
@@ -1243,24 +1315,38 @@ func (c *LSPClient) Shutdown(ctx context.Context) error {
 		c.stdin = nil
 	}
 	cmd := c.cmd
+	done := c.procDone
 	c.mu.Unlock()
 
-	// Wait for the process to exit, force-kill if it takes too long.
-	if cmd != nil && cmd.Process != nil {
-		done := make(chan struct{})
-		go func() {
-			cmd.Wait()
-			close(done)
-		}()
+	// Wait for the process to exit, force-kill if it takes too long. Waiting on
+	// done (closed by the exit monitor) instead of calling cmd.Wait again avoids
+	// concurrent Wait calls, and it also waits for the monitor to finish, so a
+	// Restart never starts the next process while the old monitor still runs.
+	if cmd != nil && cmd.Process != nil && done != nil {
 		select {
 		case <-done:
 			// Process exited cleanly.
 		case <-time.After(3 * time.Second):
 			logging.Log(logging.LevelWarning, fmt.Sprintf("LSP server %s (PID %d) did not exit after 3s, killing", c.serverPath, cmd.Process.Pid))
 			cmd.Process.Kill()
+			waitProcDone(done)
 		}
 	}
 	return nil
+}
+
+// waitProcDone waits a bounded time for an exit monitor to finish after the
+// process was killed. Kill only sends the signal; returning before the process
+// is reaped would let a Restart overlap the old process's exit handling.
+func waitProcDone(done chan struct{}) {
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		logging.Log(logging.LevelWarning, "LSP server did not exit within 5s of being killed")
+	}
 }
 
 // killProcess force-kills the subprocess if it's still running.
@@ -1272,9 +1358,11 @@ func (c *LSPClient) killProcess() {
 		c.stdin = nil
 	}
 	cmd := c.cmd
+	done := c.procDone
 	c.mu.Unlock()
 	if cmd != nil && cmd.Process != nil {
 		cmd.Process.Kill()
+		waitProcDone(done)
 	}
 }
 
@@ -2530,6 +2618,43 @@ var lspMethodToCapability = map[string]string{
 
 func methodToCapabilityKey(method string) string {
 	return lspMethodToCapability[method]
+}
+
+// mergeRegisteredCapability merges one dynamic registration into the stored
+// capability map without destroying options objects. (issue #37)
+// Semantics:
+//   - registerOptions present (non-empty, non-null): parse to map[string]any,
+//     merge over the existing value (existing options map is the base; new keys
+//     win; an existing bool true is treated as an empty base map), store the map.
+//   - no registerOptions: if the existing value is a map[string]any, KEEP it
+//     unchanged; otherwise set true.
+//
+// Returns the new value for the key.
+func mergeRegisteredCapability(existing any, capKey string, opts json.RawMessage) any {
+	trimmed := strings.TrimSpace(string(opts))
+	if trimmed != "" && trimmed != "null" {
+		var incoming map[string]any
+		if err := json.Unmarshal(opts, &incoming); err == nil {
+			merged := map[string]any{}
+			if base, ok := existing.(map[string]any); ok {
+				for k, v := range base {
+					merged[k] = v
+				}
+			}
+			// An existing bool true is an empty base map: there are no options to
+			// carry over, so the incoming options become the whole value.
+			for k, v := range incoming {
+				merged[k] = v
+			}
+			return merged
+		}
+	}
+	// No usable registerOptions: preserve an existing options object rather than
+	// clobbering it with bool true (the original issue #37 bug).
+	if m, ok := existing.(map[string]any); ok {
+		return m
+	}
+	return true
 }
 
 func (c *LSPClient) hasCapability(key string) bool {

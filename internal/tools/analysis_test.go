@@ -40,6 +40,23 @@ func TestDiagnosticsHint_ErrorsPresent(t *testing.T) {
 	}
 }
 
+// TestDiagnosticsHint_ErrorsWithDeadDocuments verifies that an all-documents
+// query with errors in one file still reports the documents whose diagnostics
+// channel never published, instead of hiding them behind the fixes hint.
+// (issue #44 review follow-up)
+func TestDiagnosticsHint_ErrorsWithDeadDocuments(t *testing.T) {
+	hint := diagnosticsHint(true, []string{"file:///b_dead.go", "file:///a_dead.go"}, 1, nil, nil)
+	if !strings.Contains(hint, "suggest_fixes") {
+		t.Errorf("expected fixes hint, got: %s", hint)
+	}
+	if !strings.Contains(hint, "file:///a_dead.go, file:///b_dead.go") {
+		t.Errorf("expected sorted dead-URI note, got: %s", hint)
+	}
+	if !strings.Contains(hint, "not confirmed clean") {
+		t.Errorf("expected dead-file caveat, got: %s", hint)
+	}
+}
+
 // TestDiagnosticsHint_MixedLiveAndDead verifies that live files keep the safe
 // hint while dead files are listed as unconfirmed, in deterministic order.
 // (issue #44)

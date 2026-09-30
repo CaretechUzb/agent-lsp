@@ -12,7 +12,9 @@ import gcfgo "github.com/blackwell-systems/gcf-go"
 // is defensive rather than expected.
 func Encode(data any) (string, error) {
 	if data == nil {
-		return "", nil
+		// An empty string renders as "(no tool output)" at the MCP layer and is
+		// indistinguishable from a hang; JSON null is the honest encoding.
+		return "null", nil
 	}
 	return gcfgo.EncodeGenericChecked(data)
 }

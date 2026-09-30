@@ -26,7 +26,7 @@ func getDiagnosticsForFile(ctx context.Context, client *lsp.LSPClient, filePath 
 
 // getDiagnosticsForFileStatus refreshes diagnostics for a file and returns the
 // count of errors (severity==1), warnings (severity==2), and whether the server
-// ever published diagnostics for this document.
+// published diagnostics for this document during THIS check.
 //
 // verified is false when no textDocument/publishDiagnostics notification was
 // ever received for the document, which is indistinguishable from a server that

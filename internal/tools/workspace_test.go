@@ -2,10 +2,15 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/blackwell-systems/agent-lsp/internal/lsp"
 )
@@ -176,6 +181,114 @@ func TestHandlePrepareRename_MissingPosition(t *testing.T) {
 	if !r.IsError {
 		t.Error("expected IsError=true for missing position")
 	}
+}
+
+// --- renameSupportsPrepare / prepareRenameNilResult (issue #38) ---
+
+func TestRenameSupportsPrepare(t *testing.T) {
+	tests := []struct {
+		name string
+		caps map[string]any
+		want bool
+	}{
+		{
+			name: "bool true is not prepare support",
+			caps: map[string]any{"renameProvider": true},
+			want: false,
+		},
+		{
+			name: "map with prepareProvider true",
+			caps: map[string]any{"renameProvider": map[string]any{"prepareProvider": true}},
+			want: true,
+		},
+		{
+			name: "empty options map",
+			caps: map[string]any{"renameProvider": map[string]any{}},
+			want: false,
+		},
+		{
+			name: "nil caps",
+			caps: nil,
+			want: false,
+		},
+		{
+			name: "absent renameProvider",
+			caps: map[string]any{},
+			want: false,
+		},
+		{
+			name: "non-bool prepareProvider junk",
+			caps: map[string]any{"renameProvider": map[string]any{"prepareProvider": "yes"}},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := renameSupportsPrepare(tt.caps); got != tt.want {
+				t.Errorf("renameSupportsPrepare(%v) = %v, want %v", tt.caps, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPrepareRenameNilResult(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("supported server returns informational hint", func(t *testing.T) {
+		caps := map[string]any{"renameProvider": map[string]any{"prepareProvider": true}}
+		r, err := prepareRenameNilResult(ctx, caps)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if r.IsError {
+			t.Error("prepareRenameNilResult must not be an ErrorResult")
+		}
+		if len(r.Content) == 0 || r.Content[0].Text == "" {
+			t.Fatal("expected non-empty first content item")
+		}
+		if len(r.Content) < 2 {
+			t.Fatalf("expected a hint as second content item, got %d items", len(r.Content))
+		}
+		if !strings.HasPrefix(r.Content[1].Text, "Next step: ") {
+			t.Errorf("hint = %q, want prefix 'Next step: '", r.Content[1].Text)
+		}
+	})
+
+	t.Run("unsupported server explains capability gap", func(t *testing.T) {
+		r, err := prepareRenameNilResult(ctx, map[string]any{"renameProvider": true})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if r.IsError {
+			t.Error("prepareRenameNilResult must not be an ErrorResult")
+		}
+		if len(r.Content) == 0 || r.Content[0].Text == "" {
+			t.Fatal("expected non-empty content")
+		}
+		if !strings.Contains(r.Content[0].Text, "not supported") {
+			t.Errorf("text = %q, want mention of 'not supported'", r.Content[0].Text)
+		}
+		if len(r.Content) != 1 {
+			t.Errorf("expected no hint for unsupported server, got %d items", len(r.Content))
+		}
+		if !strings.Contains(r.Content[0].Text, "supported\":false") {
+			t.Errorf("nil-result responses must be encoded through EncodeResult, got %q", r.Content[0].Text)
+		}
+	})
+
+	t.Run("method-not-found error yields the unsupported response", func(t *testing.T) {
+		// A server that advertises prepareProvider but answers the method with
+		// JSON-RPC -32601 must get the unsupported wording, not a tool failure.
+		if !lsp.IsMethodNotFound(&lsp.RPCError{Code: -32601, Message: "method not found"}) {
+			t.Fatal("IsMethodNotFound must recognize -32601")
+		}
+		if lsp.IsMethodNotFound(&lsp.RPCError{Code: -32602, Message: "invalid params"}) {
+			t.Error("IsMethodNotFound must not match other RPC error codes")
+		}
+		if lsp.IsMethodNotFound(context.DeadlineExceeded) {
+			t.Error("IsMethodNotFound must not match non-RPC errors")
+		}
+	})
 }
 
 // --- HandleFormatDocument ---
@@ -640,5 +753,141 @@ func TestSummarizeWorkspaceEdit_Empty(t *testing.T) {
 	files, locations, names := summarizeWorkspaceEdit(map[string]any{})
 	if files != 0 || locations != 0 || names != nil {
 		t.Errorf("got files=%d locations=%d names=%v, want 0/0/nil", files, locations, names)
+	}
+}
+
+// TestWorkspaceEditURIs verifies the URI extraction used to verify every file
+// touched by a rename: both the "changes" map and the "documentChanges" list,
+// deduplicated and sorted. (issue #44 review follow-up)
+func TestWorkspaceEditURIs(t *testing.T) {
+	changes := map[string]any{
+		"changes": map[string]any{
+			"file:///b.go": []map[string]any{{"range": map[string]any{}, "newText": "x"}},
+			"file:///a.go": []map[string]any{{"range": map[string]any{}, "newText": "y"}},
+		},
+	}
+	got := workspaceEditURIs(changes)
+	want := []string{"file:///a.go", "file:///b.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("workspaceEditURIs(changes) = %v, want %v", got, want)
+	}
+
+	docChanges := map[string]any{
+		"documentChanges": []map[string]any{
+			{"textDocument": map[string]any{"uri": "file:///c.go"}, "edits": []any{}},
+			{"textDocument": map[string]any{"uri": "file:///a.go"}, "edits": []any{}},
+		},
+	}
+	got = workspaceEditURIs(docChanges)
+	want = []string{"file:///a.go", "file:///c.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("workspaceEditURIs(documentChanges) = %v, want %v", got, want)
+	}
+
+	if got := workspaceEditURIs(map[string]any{}); len(got) != 0 {
+		t.Errorf("workspaceEditURIs(empty) = %v, want none", got)
+	}
+}
+
+// TestEditedURIsToVerify_SkipsRequestedAndOutOfRootURIs verifies that rename's
+// multi-file channel check never reopens the requested file (the caller already
+// verified it) or a URI outside the workspace root. ReopenDocument reads an
+// untracked URI from disk and sends it to the server, and the ignored form of
+// the edit (changes when documentChanges is present) is never validated by
+// ApplyWorkspaceEdit.
+func TestEditedURIsToVerify_SkipsRequestedAndOutOfRootURIs(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	requested := filepath.Join(root, "main.go")
+	sibling := filepath.Join(root, "pkg", "util.go")
+
+	edit := map[string]any{
+		"changes": map[string]any{
+			CreateFileURI(requested): []any{},
+			CreateFileURI(sibling):   []any{},
+			CreateFileURI(outside):   []any{},
+		},
+	}
+	got := editedURIsToVerify(edit, requested, root)
+	want := []string{CreateFileURI(sibling)}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("editedURIsToVerify = %v, want %v", got, want)
+	}
+}
+
+// TestVerifyWorkspaceEditChannels_SharesOneWait verifies that a dead
+// diagnostics channel costs one bounded wait for the whole rename, not one wait
+// per edited file.
+func TestVerifyWorkspaceEditChannels_SharesOneWait(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	// A server whose diagnostics channel is dead: it answers requests with null
+	// and never sends textDocument/publishDiagnostics.
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		r := lsp.NewFrameReader(conn)
+		for {
+			raw, err := r.ReadMessage()
+			if err != nil {
+				return
+			}
+			var msg struct {
+				ID     *float64 `json:"id"`
+				Method string   `json:"method"`
+			}
+			if json.Unmarshal(raw, &msg) != nil {
+				return
+			}
+			if msg.ID == nil || msg.Method == "" {
+				continue
+			}
+			body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": *msg.ID, "result": nil})
+			if _, err := conn.Write(lsp.EncodeMessage(body)); err != nil {
+				return
+			}
+		}
+	}()
+
+	client, err := lsp.NewPassiveClient(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("NewPassiveClient: %v", err)
+	}
+	defer client.Shutdown(context.Background())
+	root := t.TempDir()
+	client.MarkInitializedForTest()
+	client.SetRootDirForTest(root)
+
+	const files = 5
+	changes := map[string]any{}
+	for i := 0; i < files; i++ {
+		p := filepath.Join(root, fmt.Sprintf("f%d.go", i))
+		if err := os.WriteFile(p, []byte("package p\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		changes[CreateFileURI(p)] = []any{}
+	}
+
+	saved := editChannelWaitMs
+	editChannelWaitMs = 300
+	defer func() { editChannelWaitMs = saved }()
+
+	start := time.Now()
+	unverified := verifyWorkspaceEditChannels(context.Background(), client,
+		map[string]any{"changes": changes}, filepath.Join(root, "requested.go"))
+	elapsed := time.Since(start)
+
+	if len(unverified) != files {
+		t.Errorf("unverified = %d files, want %d (dead channel)", len(unverified), files)
+	}
+	// One shared wait is ~300ms; waiting per file would take at least 1500ms.
+	if elapsed > time.Second {
+		t.Errorf("verification took %v for %d files; the wait must be shared, not per file", elapsed, files)
 	}
 }

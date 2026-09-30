@@ -88,23 +88,42 @@ func HandleGetReferences(ctx context.Context, client *lsp.LSPClient, args map[st
 	if wErr != nil {
 		return types.ErrorResult(fmt.Sprintf("find_references: %s", wErr)), nil
 	}
+	fallbackUsed := false
 	if len(locs) == 0 {
-		locs, wErr = fuzzyPositionFallback(ctx, client, fileURI, line, col, func(pos types.Position) ([]types.Location, error) {
+		var fLocs []types.Location
+		fLocs, fallbackUsed, wErr = fuzzyPositionFallback(ctx, client, fileURI, line, col, client.RootDir(), func(pos types.Position) ([]types.Location, error) {
 			return client.GetReferences(ctx, fileURI, pos, includeDecl)
 		})
 		if wErr != nil {
 			return types.ErrorResult(fmt.Sprintf("find_references (fuzzy): %s", wErr)), nil
 		}
+		locs = fLocs
 	}
 	res, err := locationsResult(ctx, locs)
 	if err != nil {
 		return res, err
 	}
 	if len(locs) == 0 {
-		return appendHint(res, "This symbol may be dead code. Use /lsp-dead-code to verify."), nil
+		return appendHint(res, referencesEmptyHint), nil
+	}
+	if fallbackUsed {
+		return appendHint(res, fuzzyFallbackProvenanceHint), nil
 	}
 	return appendHint(res, "Use blast_radius for blast radius with test/non-test partitioning."), nil
 }
+
+// referencesEmptyHint qualifies an empty find_references result. An empty
+// result has at least two causes — the symbol is genuinely unreferenced, or
+// the language server could not resolve references for this position (index
+// state, cross-file limitations, servers that only index opened documents).
+// The unconditional dead-code claim was a false positive pushing agents toward
+// deleting used code. (issue #38)
+const referencesEmptyHint = "No references found. This may be dead code, or the language server could not resolve references for this position — use /lsp-dead-code to verify."
+
+// fuzzyFallbackProvenanceHint marks results that the tool could not resolve
+// directly and instead produced via the fuzzy position fallback, so agents can
+// distrust them accordingly. (issue #40)
+const fuzzyFallbackProvenanceHint = "Result produced via fuzzy position fallback — verify the symbol identity before use."
 
 // HandleGoToDefinition finds the definition of the symbol at the given location.
 func HandleGoToDefinition(ctx context.Context, client *lsp.LSPClient, args map[string]any) (types.ToolResult, error) {
@@ -135,17 +154,23 @@ func HandleGoToDefinition(ctx context.Context, client *lsp.LSPClient, args map[s
 	if wErr != nil {
 		return types.ErrorResult(fmt.Sprintf("go_to_definition: %s", wErr)), nil
 	}
+	fallbackUsed := false
 	if len(locs) == 0 {
-		locs, wErr = fuzzyPositionFallback(ctx, client, fileURI, line, col, func(pos types.Position) ([]types.Location, error) {
+		var fLocs []types.Location
+		fLocs, fallbackUsed, wErr = fuzzyPositionFallback(ctx, client, fileURI, line, col, client.RootDir(), func(pos types.Position) ([]types.Location, error) {
 			return client.GetDefinition(ctx, fileURI, pos)
 		})
 		if wErr != nil {
 			return types.ErrorResult(fmt.Sprintf("go_to_definition (fuzzy): %s", wErr)), nil
 		}
+		locs = fLocs
 	}
 	res, err := locationsResult(ctx, locs)
 	if err != nil {
 		return res, err
+	}
+	if fallbackUsed {
+		return appendHint(res, fuzzyFallbackProvenanceHint), nil
 	}
 	return appendHint(res, "Use inspect_symbol at the definition for type details and documentation."), nil
 }

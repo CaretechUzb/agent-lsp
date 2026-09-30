@@ -158,7 +158,15 @@ func diagnosticsHint(hasErrors bool, deadURIs []string, liveCount int, pullDead,
 		safeHint  = "No errors. Safe to proceed."
 	)
 	if hasErrors {
-		return fixesHint
+		if len(deadURIs) == 0 {
+			return fixesHint
+		}
+		// Errors elsewhere do not confirm the dead documents: report them too,
+		// so an all-documents query with errors in one file still surfaces the
+		// unverified ones.
+		sorted := append([]string(nil), deadURIs...)
+		sort.Strings(sorted)
+		return fixesHint + " No diagnostics received for: " + strings.Join(sorted, ", ") + " — those files are not confirmed clean."
 	}
 	if len(deadURIs) == 0 {
 		// Every queried document is verified by a push or a successful pull
