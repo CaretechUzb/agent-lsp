@@ -650,46 +650,57 @@ func TestPullDiagnostics_FullReport(t *testing.T) {
 	}
 }
 
-// TestPullDiagnostics_UnchangedReport verifies that an "unchanged" report yields
-// no diagnostics and no error: there is nothing to extract. (issue #43)
-func TestPullDiagnostics_UnchangedReport(t *testing.T) {
-	c, serverW, clientR := newTestClient(t)
-	c.capsMu.Lock()
-	c.capabilities["diagnosticProvider"] = true
-	c.capsMu.Unlock()
+// TestPullDiagnostics_NonFullReportIsUnverified verifies that an answer without
+// a "full" report (an "unchanged" report, an unknown kind, or null) returns
+// ErrPullDiagnosticsNoReport instead of an empty list. An empty list reads as
+// "verified clean" to get_diagnostics, which would report "No errors. Safe to
+// proceed." for a document nothing verified. (issue #43)
+func TestPullDiagnostics_NonFullReportIsUnverified(t *testing.T) {
+	for name, result := range map[string]any{
+		"unchanged":    map[string]any{"kind": "unchanged", "resultId": "1"},
+		"unknown kind": map[string]any{"kind": "partial"},
+		"null":         nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, serverW, clientR := newTestClient(t)
+			c.capsMu.Lock()
+			c.capabilities["diagnosticProvider"] = true
+			c.capsMu.Unlock()
 
-	type reply struct {
-		diags []types.LSPDiagnostic
-		err   error
-	}
-	done := make(chan reply, 1)
-	go func() {
-		diags, err := c.PullDiagnostics(context.Background(), "file:///x.go")
-		done <- reply{diags, err}
-	}()
+			type reply struct {
+				diags []types.LSPDiagnostic
+				err   error
+			}
+			done := make(chan reply, 1)
+			go func() {
+				diags, err := c.PullDiagnostics(context.Background(), "file:///x.go")
+				done <- reply{diags, err}
+			}()
 
-	req := readNextMsg(t, clientR)
-	if req == nil {
-		t.Fatal("expected diagnostic request")
-	}
-	if err := writeMsg(serverW, map[string]any{
-		"jsonrpc": "2.0",
-		"id":      req["id"],
-		"result":  map[string]any{"kind": "unchanged"},
-	}); err != nil {
-		t.Fatalf("write response: %v", err)
-	}
+			req := readNextMsg(t, clientR)
+			if req == nil {
+				t.Fatal("expected diagnostic request")
+			}
+			if err := writeMsg(serverW, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req["id"],
+				"result":  result,
+			}); err != nil {
+				t.Fatalf("write response: %v", err)
+			}
 
-	select {
-	case r := <-done:
-		if r.err != nil {
-			t.Fatalf("expected no error for unchanged report, got: %v", r.err)
-		}
-		if len(r.diags) != 0 {
-			t.Errorf("expected no diagnostics for unchanged report, got %+v", r.diags)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for PullDiagnostics")
+			select {
+			case r := <-done:
+				if !errors.Is(r.err, ErrPullDiagnosticsNoReport) {
+					t.Fatalf("err = %v, want ErrPullDiagnosticsNoReport", r.err)
+				}
+				if r.diags != nil {
+					t.Errorf("expected no diagnostics, got %+v", r.diags)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timeout waiting for PullDiagnostics")
+			}
+		})
 	}
 }
 

@@ -1555,6 +1555,12 @@ func (c *LSPClient) GetAllDiagnostics() map[string][]types.LSPDiagnostic {
 // genuine request failure such as a timeout. (issue #43)
 var ErrPullDiagnosticsUnsupported = errors.New("server does not support pull diagnostics (diagnosticProvider)")
 
+// ErrPullDiagnosticsNoReport is returned by PullDiagnostics when the server
+// answered without a "full" report (null, "unchanged", or an unknown kind).
+// Such an answer carries no diagnostics for the current document, so it must
+// not be treated as a verified clean result.
+var ErrPullDiagnosticsNoReport = errors.New("pull diagnostics: server returned no full report")
+
 // documentDiagnosticReport is the subset of the LSP 3.17
 // DocumentDiagnosticReport that PullDiagnostics consumes: a "full" report
 // carries items, an "unchanged" report carries none.
@@ -1576,9 +1582,11 @@ type documentDiagnosticReport struct {
 // "textDocument/diagnostic" entry in requestTimeouts (10s) as well as ctx.
 //
 // When the server did not declare diagnosticProvider it returns
-// ErrPullDiagnosticsUnsupported without sending a request. A null result, an
-// "unchanged" report, or any unrecognized report kind yields no diagnostics and
-// no error. (issue #43)
+// ErrPullDiagnosticsUnsupported without sending a request. Only a "full" report
+// verifies the document: a null result, an "unchanged" report (never valid here,
+// since no previousResultId is sent), or an unrecognized kind returns
+// ErrPullDiagnosticsNoReport, so callers report the document as unverified
+// instead of clean. (issue #43)
 func (c *LSPClient) PullDiagnostics(ctx context.Context, uri string) ([]types.LSPDiagnostic, error) {
 	if !c.hasCapability("diagnosticProvider") {
 		return nil, ErrPullDiagnosticsUnsupported
@@ -1590,16 +1598,16 @@ func (c *LSPClient) PullDiagnostics(ctx context.Context, uri string) ([]types.LS
 		return nil, err
 	}
 	if result == nil || string(result) == "null" {
-		return []types.LSPDiagnostic{}, nil
+		return nil, fmt.Errorf("%w (null result)", ErrPullDiagnosticsNoReport)
 	}
 	var report documentDiagnosticReport
 	if err := json.Unmarshal(result, &report); err != nil {
 		return nil, err
 	}
 	if report.Kind != "full" {
-		// "unchanged" (or an unknown kind) carries nothing to extract. This is
-		// not an error: the server is telling us its cached result still holds.
-		return []types.LSPDiagnostic{}, nil
+		// Returning an empty list here would read as "verified clean" to the
+		// caller while nothing was verified.
+		return nil, fmt.Errorf("%w (kind %q)", ErrPullDiagnosticsNoReport, report.Kind)
 	}
 	if report.Items == nil {
 		return []types.LSPDiagnostic{}, nil

@@ -2,8 +2,14 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
+	"net"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/blackwell-systems/agent-lsp/internal/lsp"
+	"github.com/blackwell-systems/agent-lsp/internal/types"
 )
 
 // TestDiagnosticsHint_DeadChannel verifies that an empty result from a document
@@ -251,5 +257,107 @@ func TestDiagnosticsHint_BudgetSkippedAllKeepsGenericWording(t *testing.T) {
 	}
 	if !strings.Contains(hint, "does not confirm the file is clean") {
 		t.Errorf("expected clean-file caveat, got: %s", hint)
+	}
+}
+
+// TestPullDiagnosticsForDeadChannels_FailedPullKeepsConcurrentPush verifies that
+// when a publish arrives while a pull is pending and the pull then fails, the
+// result carries the pushed diagnostics. The classifier treats that document as
+// live (it has a publication), so leaving the empty pre-pull entry in place
+// would report a document with errors as clean. (issue #43)
+func TestPullDiagnosticsForDeadChannels_FailedPullKeepsConcurrentPush(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	const uri = "file:///tmp/agent-lsp-pull-test/x.go"
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		write := func(v any) bool {
+			b, _ := json.Marshal(v)
+			_, err := conn.Write(lsp.EncodeMessage(b))
+			return err == nil
+		}
+		// Advertise pull support through dynamic registration.
+		if !write(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "client/registerCapability",
+			"params": map[string]any{"registrations": []map[string]any{
+				{"id": "diag", "method": "textDocument/diagnostic"},
+			}}}) {
+			return
+		}
+		r := lsp.NewFrameReader(conn)
+		for {
+			raw, err := r.ReadMessage()
+			if err != nil {
+				return
+			}
+			var msg struct {
+				ID     *float64 `json:"id"`
+				Method string   `json:"method"`
+			}
+			if json.Unmarshal(raw, &msg) != nil {
+				return
+			}
+			if msg.ID == nil || msg.Method == "" {
+				continue
+			}
+			if msg.Method == "textDocument/diagnostic" {
+				// Push while the pull is pending, then fail the pull.
+				if !write(map[string]any{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+					"params": map[string]any{"uri": uri, "diagnostics": []any{map[string]any{
+						"range": map[string]any{
+							"start": map[string]any{"line": 0, "character": 0},
+							"end":   map[string]any{"line": 0, "character": 1},
+						},
+						"severity": 1, "message": "pushed during pull",
+					}}}}) {
+					return
+				}
+				if !write(map[string]any{"jsonrpc": "2.0", "id": *msg.ID,
+					"error": map[string]any{"code": -32603, "message": "pull failed"}}) {
+					return
+				}
+				continue
+			}
+			if !write(map[string]any{"jsonrpc": "2.0", "id": *msg.ID, "result": nil}) {
+				return
+			}
+		}
+	}()
+
+	client, err := lsp.NewPassiveClient(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("NewPassiveClient: %v", err)
+	}
+	defer client.Shutdown(context.Background())
+	client.MarkInitializedForTest()
+	for deadline := time.Now().Add(2 * time.Second); !client.SupportsPullDiagnostics(); {
+		if time.Now().After(deadline) {
+			t.Fatal("dynamic diagnosticProvider registration never arrived")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	saved := pullDiagnosticsEnabled
+	pullDiagnosticsEnabled = func() bool { return true }
+	defer func() { pullDiagnosticsEnabled = saved }()
+
+	diagMap := map[string][]types.LSPDiagnostic{uri: {}}
+	pulledLive, attempted := pullDiagnosticsForDeadChannels(context.Background(), client, diagMap, []string{uri}, true)
+
+	if len(attempted) != 1 {
+		t.Fatalf("attempted pulls = %v, want one", attempted)
+	}
+	if pulledLive[uri] {
+		t.Error("a failed pull must not count the document as pull-verified")
+	}
+	got := diagMap[uri]
+	if len(got) != 1 || got[0].Message != "pushed during pull" {
+		t.Errorf("diagnostics = %+v, want the diagnostic pushed during the pull", got)
 	}
 }

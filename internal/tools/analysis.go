@@ -282,8 +282,14 @@ func pullDiagnosticsForDeadChannels(ctx context.Context, client *lsp.LSPClient, 
 		attemptedURIs = append(attemptedURIs, uri)
 		pulled, err := client.PullDiagnostics(budgetCtx, uri)
 		if err != nil {
-			// Timeout or protocol error: leave the channel dead. The caller
-			// never retries, so the server is not re-queried this turn.
+			// Timeout, protocol error, or no full report: the pull verified
+			// nothing, and the caller never retries. But a publish may have
+			// arrived while the pull was pending; the classifier then treats
+			// the channel as live, so the result must carry those pushed
+			// diagnostics rather than the empty entry collected before.
+			if client.HasPublishedDiagnostics(uri) {
+				diagMap[uri] = client.GetDiagnostics(uri)
+			}
 			continue
 		}
 		if client.HasPublishedDiagnostics(uri) {
