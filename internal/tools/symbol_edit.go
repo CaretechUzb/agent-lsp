@@ -28,15 +28,14 @@ func getDiagnosticsForFile(ctx context.Context, client *lsp.LSPClient, filePath 
 // count of errors (severity==1), warnings (severity==2), and whether the server
 // published diagnostics for this document during THIS check.
 //
-// The cached diagnostics from before the edit are dropped first: without that,
-// a stale pre-edit publication would count as a live channel and a timed-out
-// wait would silently report the old counts as post-edit results. verified is
-// false when no fresh textDocument/publishDiagnostics notification arrived for
-// the document, which is indistinguishable from a server that analyzed the file
-// and found nothing: agent-lsp does not implement the LSP 3.17 pull model, so a
-// zero count from an unverified document proves nothing. Callers must annotate
-// the result rather than asserting the file is clean. A false result is
-// returned for a nil client. (issue #44)
+// verified is false when no textDocument/publishDiagnostics notification was
+// ever received for the document, which is indistinguishable from a server that
+// analyzed the file and found nothing. Note that this post-edit path never
+// pulls: a pull-only server (one that declares diagnosticProvider but never
+// pushes) therefore reports unverified here even though get_diagnostics could
+// verify it. A zero count from an unverified document proves nothing. Callers
+// must annotate the result rather than asserting the file is clean. A false
+// result is returned for a nil client. (issue #44)
 func getDiagnosticsForFileStatus(ctx context.Context, client *lsp.LSPClient, filePath string) (errors int, warnings int, verified bool) {
 	if client == nil {
 		return 0, 0, false
@@ -46,7 +45,8 @@ func getDiagnosticsForFileStatus(ctx context.Context, client *lsp.LSPClient, fil
 
 	// Drop any cached diagnostics from before the edit, so the wait below and
 	// the counts read here observe only notifications published after the
-	// reopen.
+	// reopen. Without this, a timed-out wait would silently report the stale
+	// pre-edit counts as post-edit results.
 	client.ResetDiagnostics(fileURI)
 
 	// Reopen the document to trigger fresh diagnostics from the server.

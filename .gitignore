@@ -1,5 +1,6 @@
 # Build output
 /lsp-mcp-go
+/bin/
 
 # Test fixture build artifacts
 test/fixtures/rust/target/

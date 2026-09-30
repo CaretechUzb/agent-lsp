@@ -303,13 +303,17 @@ jobs:
           # go_to_type_definition / go_to_implementation timing-sensitive on the
           # runner). Bump both fields together after re-deriving the baseline
           # against the new release.
-          # v2.4.2 fixes the upstream defects filed from our v2.4.1 integration:
-          # constructor-style declarations did not parse (#76, PR #80 — the root
-          # cause of the #62-era fallbacks) and signatureHelp returned the
-          # containing function's signature (#77, PR #81). Requires the
-          # open_document fix that sends real file content in didOpen (session.go).
-          MQL_VERSION=v2.4.2
-          MQL_SHA256=87fb244baac04da48d9da62507943801ebccd7adf3cb0300134070896bf87ba0
+          # v2.4.2 fixed the upstream defects filed from our v2.4.1 integration
+          # (constructor-style declarations did not parse, #76/PR #80; signatureHelp
+          # returned the containing function's signature, #77/PR #81). v2.5.0 adds
+          # the LSP 3.17 pull-diagnostics fix (#90-#96): textDocument/diagnostic
+          # no longer hangs and wedges the server (#91), the server declares
+          # diagnosticProvider, and cross-file resolution is deterministic. The
+          # baseline was re-verified against v2.5.0 with the agent-lsp pull
+          # fallback enabled. Requires the open_document fix that sends real file
+          # content in didOpen (session.go).
+          MQL_VERSION=v2.5.0
+          MQL_SHA256=3706297897f64c4cb8425eacf8a1cecd728773d1750eaf061e8296918ffeded1
           echo "Installing mql-lsp-server ${MQL_VERSION}"
           wget -q "https://github.com/davalillo/mql-language-server/releases/download/${MQL_VERSION}/mql-lsp-server-linux-x64" -O /tmp/mql-lsp-server
           echo "${MQL_SHA256}  /tmp/mql-lsp-server" | sha256sum -c -
