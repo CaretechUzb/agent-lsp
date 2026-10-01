@@ -3,6 +3,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -273,6 +274,108 @@ func TestLSPClient_PublishDiagnostics(t *testing.T) {
 	}
 }
 
+// TestLSPClient_HasPublishedDiagnostics_FalseWithoutPublish verifies that a
+// document that never received a publishDiagnostics notification is reported as
+// unverified. (issue #44)
+func TestLSPClient_HasPublishedDiagnostics_FalseWithoutPublish(t *testing.T) {
+	c, _, _ := newTestClient(t)
+
+	if c.HasPublishedDiagnostics("file:///never.go") {
+		t.Error("expected HasPublishedDiagnostics=false before any publish")
+	}
+}
+
+// TestLSPClient_HasPublishedDiagnostics_TrueAfterPublish verifies that receiving
+// a publishDiagnostics notification marks that document as verified while other
+// documents remain unverified. (issue #44)
+func TestLSPClient_HasPublishedDiagnostics_TrueAfterPublish(t *testing.T) {
+	c, serverW, _ := newTestClient(t)
+
+	received := make(chan struct{}, 1)
+	cb := types.DiagnosticUpdateCallback(func(string, []types.LSPDiagnostic) {
+		select {
+		case received <- struct{}{}:
+		default:
+		}
+	})
+	c.SubscribeToDiagnostics(cb)
+	defer c.UnsubscribeFromDiagnostics(cb)
+
+	if err := writeMsg(serverW, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/publishDiagnostics",
+		"params": map[string]any{
+			"uri": "file:///published.go",
+			"diagnostics": []any{
+				map[string]any{
+					"range": map[string]any{
+						"start": map[string]any{"line": 0, "character": 0},
+						"end":   map[string]any{"line": 0, "character": 1},
+					},
+					"severity": 1,
+					"message":  "boom",
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for publishDiagnostics")
+	}
+
+	if !c.HasPublishedDiagnostics("file:///published.go") {
+		t.Error("expected HasPublishedDiagnostics=true after publish")
+	}
+	if c.HasPublishedDiagnostics("file:///other.go") {
+		t.Error("expected HasPublishedDiagnostics=false for a document with no publish")
+	}
+}
+
+// TestLSPClient_HasPublishedDiagnostics_EmptyPublishCounts verifies that a
+// publish carrying an empty diagnostics array still counts as a delivered
+// notification (the live-channel-empty case). (issue #44)
+func TestLSPClient_HasPublishedDiagnostics_EmptyPublishCounts(t *testing.T) {
+	c, serverW, _ := newTestClient(t)
+
+	received := make(chan struct{}, 1)
+	cb := types.DiagnosticUpdateCallback(func(string, []types.LSPDiagnostic) {
+		select {
+		case received <- struct{}{}:
+		default:
+		}
+	})
+	c.SubscribeToDiagnostics(cb)
+	defer c.UnsubscribeFromDiagnostics(cb)
+
+	if err := writeMsg(serverW, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/publishDiagnostics",
+		"params": map[string]any{
+			"uri":         "file:///clean.go",
+			"diagnostics": []any{},
+		},
+	}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for publishDiagnostics")
+	}
+
+	if !c.HasPublishedDiagnostics("file:///clean.go") {
+		t.Error("expected HasPublishedDiagnostics=true for an empty publish")
+	}
+	if len(c.GetDiagnostics("file:///clean.go")) != 0 {
+		t.Error("expected no diagnostics for an empty publish")
+	}
+}
+
 // TestLSPClient_UnsubscribeFromDiagnostics verifies that callbacks can be removed.
 func TestLSPClient_UnsubscribeFromDiagnostics(t *testing.T) {
 	c, serverW, _ := newTestClient(t)
@@ -474,6 +577,210 @@ func TestLanguageIDFromURI(t *testing.T) {
 	}
 }
 
+// TestPullDiagnostics_FullReport verifies that PullDiagnostics issues a
+// textDocument/diagnostic request and extracts the items from a "full" report.
+// (issue #43)
+func TestPullDiagnostics_FullReport(t *testing.T) {
+	c, serverW, clientR := newTestClient(t)
+
+	// A server-declared diagnosticProvider is an object, not a bool; the
+	// capability check must accept both shapes.
+	c.capsMu.Lock()
+	c.capabilities["diagnosticProvider"] = map[string]any{"identifier": "test"}
+	c.capsMu.Unlock()
+
+	type reply struct {
+		diags []types.LSPDiagnostic
+		err   error
+	}
+	done := make(chan reply, 1)
+	go func() {
+		diags, err := c.PullDiagnostics(context.Background(), "file:///x.go")
+		done <- reply{diags, err}
+	}()
+
+	req := readNextMsg(t, clientR)
+	if req == nil {
+		t.Fatal("expected diagnostic request")
+	}
+	if req["method"] != "textDocument/diagnostic" {
+		t.Errorf("expected textDocument/diagnostic, got %v", req["method"])
+	}
+	params, _ := req["params"].(map[string]any)
+	td, _ := params["textDocument"].(map[string]any)
+	if td["uri"] != "file:///x.go" {
+		t.Errorf("expected textDocument.uri in params, got %v", params)
+	}
+
+	if err := writeMsg(serverW, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      req["id"],
+		"result": map[string]any{
+			"kind": "full",
+			"items": []any{
+				map[string]any{
+					"range":    map[string]any{"start": map[string]any{"line": 0, "character": 0}, "end": map[string]any{"line": 0, "character": 1}},
+					"severity": 1,
+					"message":  "boom",
+				},
+				map[string]any{
+					"range":    map[string]any{"start": map[string]any{"line": 1, "character": 0}, "end": map[string]any{"line": 1, "character": 1}},
+					"severity": 2,
+					"message":  "warn",
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("write response: %v", err)
+	}
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("PullDiagnostics error: %v", r.err)
+		}
+		if len(r.diags) != 2 {
+			t.Fatalf("expected 2 diagnostics, got %d: %+v", len(r.diags), r.diags)
+		}
+		if r.diags[0].Message != "boom" || r.diags[1].Message != "warn" {
+			t.Errorf("unexpected diagnostics: %+v", r.diags)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for PullDiagnostics")
+	}
+}
+
+// TestPullDiagnostics_NonFullReportIsUnverified verifies that an answer without
+// a "full" report (an "unchanged" report, an unknown kind, or null) returns
+// ErrPullDiagnosticsNoReport instead of an empty list. An empty list reads as
+// "verified clean" to get_diagnostics, which would report "No errors. Safe to
+// proceed." for a document nothing verified. (issue #43)
+func TestPullDiagnostics_NonFullReportIsUnverified(t *testing.T) {
+	for name, result := range map[string]any{
+		"unchanged":    map[string]any{"kind": "unchanged", "resultId": "1"},
+		"unknown kind": map[string]any{"kind": "partial"},
+		"null":         nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, serverW, clientR := newTestClient(t)
+			c.capsMu.Lock()
+			c.capabilities["diagnosticProvider"] = true
+			c.capsMu.Unlock()
+
+			type reply struct {
+				diags []types.LSPDiagnostic
+				err   error
+			}
+			done := make(chan reply, 1)
+			go func() {
+				diags, err := c.PullDiagnostics(context.Background(), "file:///x.go")
+				done <- reply{diags, err}
+			}()
+
+			req := readNextMsg(t, clientR)
+			if req == nil {
+				t.Fatal("expected diagnostic request")
+			}
+			if err := writeMsg(serverW, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req["id"],
+				"result":  result,
+			}); err != nil {
+				t.Fatalf("write response: %v", err)
+			}
+
+			select {
+			case r := <-done:
+				if !errors.Is(r.err, ErrPullDiagnosticsNoReport) {
+					t.Fatalf("err = %v, want ErrPullDiagnosticsNoReport", r.err)
+				}
+				if r.diags != nil {
+					t.Errorf("expected no diagnostics, got %+v", r.diags)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timeout waiting for PullDiagnostics")
+			}
+		})
+	}
+}
+
+// TestPullDiagnostics_UnsupportedDoesNotSend verifies that a server without the
+// diagnosticProvider capability returns the sentinel error without sending a
+// request at all. (issue #43)
+func TestPullDiagnostics_UnsupportedDoesNotSend(t *testing.T) {
+	c, _, clientR := newTestClient(t)
+
+	_, err := c.PullDiagnostics(context.Background(), "file:///x.go")
+	if !errors.Is(err, ErrPullDiagnosticsUnsupported) {
+		t.Fatalf("expected ErrPullDiagnosticsUnsupported, got %v", err)
+	}
+
+	c.pendingMu.Lock()
+	pending := len(c.pending)
+	c.pendingMu.Unlock()
+	if pending != 0 {
+		t.Errorf("expected no pending request, got %d", pending)
+	}
+
+	// Confirm nothing was written to the server as well.
+	sent := make(chan struct{})
+	go func() {
+		fr := NewFrameReader(clientR)
+		if _, rerr := fr.ReadMessage(); rerr == nil {
+			close(sent)
+		}
+	}()
+	select {
+	case <-sent:
+		t.Error("expected no textDocument/diagnostic request when unsupported")
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+// TestPullDiagnostics_ContextDeadline verifies that a hanging server does not
+// block the client: the caller's context deadline bounds the request, the
+// pending entry is cleaned up, and the error is the context error. A pull must
+// never wedge the session. (issue #43)
+func TestPullDiagnostics_ContextDeadline(t *testing.T) {
+	c, _, clientR := newTestClient(t)
+	c.capsMu.Lock()
+	c.capabilities["diagnosticProvider"] = true
+	c.capsMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := c.PullDiagnostics(ctx, "file:///hang.go")
+		errCh <- err
+	}()
+
+	// Consume the outgoing request so the synchronous pipe write does not block,
+	// then deliberately never answer it.
+	if req := readNextMsg(t, clientR); req == nil {
+		t.Fatal("expected diagnostic request")
+	}
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("PullDiagnostics did not honor the caller context deadline")
+	}
+
+	// A timed-out pull must not poison the session: the pending entry is removed
+	// so a later response (or request) is not misrouted.
+	c.pendingMu.Lock()
+	pending := len(c.pending)
+	c.pendingMu.Unlock()
+	if pending != 0 {
+		t.Errorf("expected pending requests to be cleaned up after timeout, got %d", pending)
+	}
+}
+
 // TestWriteRawAfterProcessExit verifies that once the subprocess exits, the
 // exit-monitor goroutine nulls stdin and sets exited, so a later request
 // returns a clean "LSP process has exited" error rather than the confusing
@@ -512,5 +819,39 @@ func TestWriteRawAfterProcessExit(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "file already closed") {
 		t.Errorf("error %q should not leak the low-level closed-pipe error", err.Error())
+	}
+}
+
+// TestResetDiagnostics verifies that ResetDiagnostics removes the cached
+// diagnostics for the URI (including under its normalized form), so post-edit
+// verification observes only freshly published notifications. (issue #44
+// review follow-up)
+func TestResetDiagnostics(t *testing.T) {
+	c, _, _ := newTestClient(t)
+	uri := "file:///some/file.go"
+
+	c.diagMu.Lock()
+	c.diags[uri] = []types.LSPDiagnostic{{Severity: 1}}
+	c.diagMu.Unlock()
+
+	if !c.HasPublishedDiagnostics(uri) {
+		t.Fatal("expected cached diagnostics before reset")
+	}
+
+	c.ResetDiagnostics(uri)
+	if c.HasPublishedDiagnostics(uri) {
+		t.Error("expected cached diagnostics to be removed after ResetDiagnostics")
+	}
+	if got := c.GetDiagnostics(uri); len(got) != 0 {
+		t.Errorf("expected empty diagnostics after reset, got %d", len(got))
+	}
+
+	// The normalized form of the URI must be cleared too.
+	c.diagMu.Lock()
+	c.diags[NormalizeFileURI(uri)] = []types.LSPDiagnostic{{Severity: 2}}
+	c.diagMu.Unlock()
+	c.ResetDiagnostics(uri)
+	if c.HasPublishedDiagnostics(uri) {
+		t.Error("expected normalized cached diagnostics to be removed after ResetDiagnostics")
 	}
 }

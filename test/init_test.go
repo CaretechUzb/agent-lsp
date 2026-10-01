@@ -39,9 +39,9 @@ func TestInitNonInteractive(t *testing.T) {
 		t.Fatalf("failed to parse .mcp.json: %v\ncontents: %s", err, data)
 	}
 
-	lsp, ok := cfg.MCPServers["lsp"]
+	lsp, ok := cfg.MCPServers["agent-lsp"]
 	if !ok {
-		t.Fatalf("expected mcpServers.lsp key, got: %v", cfg.MCPServers)
+		t.Fatalf("expected mcpServers.agent-lsp key, got: %v", cfg.MCPServers)
 	}
 	if lsp.Type != "stdio" {
 		t.Errorf("expected type=stdio, got %q", lsp.Type)
@@ -99,7 +99,7 @@ func TestInitNonInteractiveMerge(t *testing.T) {
 	if _, ok := cfg.MCPServers["other-tool"]; !ok {
 		t.Error("merge overwrote existing 'other-tool' entry — should have been preserved")
 	}
-	if _, ok := cfg.MCPServers["lsp"]; !ok {
+	if _, ok := cfg.MCPServers["agent-lsp"]; !ok {
 		t.Error("expected 'lsp' entry to be added by init")
 	}
 }

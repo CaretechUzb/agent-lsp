@@ -126,8 +126,8 @@ func HandleGetChangeImpact(ctx context.Context, client *lsp.LSPClient, args map[
 	// Struct fields are excluded: they aren't independently callable and their
 	// references are noise that inflates the symbol count.
 	var allExports []exportedSymbol
-	var allDocSymbols []types.DocumentSymbol   // retained for sync-guarded detection
-	filesBySymbol := make(map[string]string)   // symbol name -> file path
+	var allDocSymbols []types.DocumentSymbol // retained for sync-guarded detection
+	filesBySymbol := make(map[string]string) // symbol name -> file path
 	var warnings []string
 
 	for _, file := range changedFiles {
@@ -146,7 +146,7 @@ func HandleGetChangeImpact(ctx context.Context, client *lsp.LSPClient, args map[
 		if scope == "all" {
 			collectAllSymbols(symbols, file, langID, &allExports, true)
 		} else {
-			collectExportedSymbols(symbols, file, langID, &allExports, true)
+			collectExportedSymbols(symbols, file, langID, &allExports, true, 0, 0)
 		}
 	}
 
@@ -347,11 +347,44 @@ func HandleGetChangeImpact(ctx context.Context, client *lsp.LSPClient, args map[
 	return appendHint(result, impactHint), nil
 }
 
+// nestedCallableKinds is the set of LSP SymbolKind values that remain valid
+// blast-radius targets when they appear NESTED (depth > 0) inside another
+// symbol. Several language servers (observed with mql-lsp-server v2.4.2) nest
+// parameters and local variables as children of functions in
+// textDocument/documentSymbol, so scope=exported restricts nested symbols to
+// container/callable kinds and leaves locals (13 Variable), fields (8 Field),
+// properties (7 Property), enum members (22 EnumMember), and literal-ish kinds
+// (15-21) out. Constants (14) are an exception: they only stay targetable when
+// their parent is a container kind (see constantContainerKinds) — a constant
+// declared inside a function is a local implementation detail.
+// scope=all (collectAllSymbols) legitimately wants the excluded nested symbols
+// (fields excepted, which stay excluded there too) for dead-code detection of
+// internal helpers and is unaffected.
+// 12 Function, 2 Module, 3 Namespace, 4 Package, 5 Class, 6 Method,
+// 9 Constructor, 10 Enum, 11 Interface, 14 Constant, 23 Struct, 24 Event.
+var nestedCallableKinds = map[types.SymbolKind]bool{
+	2: true, 3: true, 4: true, 5: true, 6: true, 9: true,
+	10: true, 11: true, 12: true, 14: true, 23: true, 24: true,
+}
+
+// constantContainerKinds is the set of parent SymbolKinds inside which a
+// nested Constant (14) stays a legitimate blast-radius target: class, struct,
+// enum, namespace, module, package, interface, and event bodies. A constant
+// declared inside a function or method is a local detail and is excluded from
+// scope=exported.
+var constantContainerKinds = map[types.SymbolKind]bool{
+	2: true, 3: true, 4: true, 5: true, 10: true, 11: true, 23: true, 24: true,
+}
+
 // collectExportedSymbols walks a DocumentSymbol tree and appends exported symbols
 // to the provided slice. For Go, only uppercase symbols are exported.
 // If recurseIntoChildren is false, struct fields and method children are skipped
 // to avoid inflating the symbol count with non-independently-callable members.
-func collectExportedSymbols(syms []types.DocumentSymbol, filePath, langID string, out *[]exportedSymbol, recurseIntoChildren bool) {
+// depth is the current nesting level: top-level symbols (depth == 0) keep every
+// kind except fields, while nested symbols (depth > 0) are restricted to
+// nestedCallableKinds so parameters, locals, and other non-callable members do
+// not become blast-radius targets.
+func collectExportedSymbols(syms []types.DocumentSymbol, filePath, langID string, out *[]exportedSymbol, recurseIntoChildren bool, depth int, parentKind types.SymbolKind) {
 	// Cache source lines for resolving symbol name positions.
 	// gopls returns SelectionRange.Start pointing to the keyword (e.g., "func")
 	// rather than the identifier name for functions and methods. We resolve the
@@ -365,6 +398,19 @@ func collectExportedSymbols(syms []types.DocumentSymbol, filePath, langID string
 		// Skip struct fields (kind 8): they're not independently callable and
 		// inflate the symbol count without adding blast-radius value.
 		if sym.Kind == 8 {
+			continue
+		}
+		// Nested symbols are only legitimate blast-radius targets when they are
+		// independently callable/container kinds. Skip excluded nested symbols
+		// WITHOUT recursing: a parameter has no callable children, so descending
+		// would only surface more noise.
+		if depth > 0 && !nestedCallableKinds[sym.Kind] {
+			continue
+		}
+		// A nested constant stays a target only when its parent is a container
+		// (class constant, enum member constant, ...); a function-local constant
+		// is a local implementation detail. (issue #41 review follow-up)
+		if depth > 0 && sym.Kind == 14 && !constantContainerKinds[parentKind] {
 			continue
 		}
 		// For Go, check if the symbol is exported. Method names from gopls
@@ -403,7 +449,7 @@ func collectExportedSymbols(syms []types.DocumentSymbol, filePath, langID string
 			})
 		}
 		if recurseIntoChildren {
-			collectExportedSymbols(sym.Children, filePath, langID, out, true)
+			collectExportedSymbols(sym.Children, filePath, langID, out, true, depth+1, sym.Kind)
 		}
 	}
 }

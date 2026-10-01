@@ -1,18 +1,18 @@
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [Русский](README.ru.md) · [हिन्दी](README.hi.md) · **العربية**
 
 <p align="center">
-  <img src="assets/banner.png" alt="agent-lsp" width="820">
+  <img src="../../assets/banner.png" alt="agent-lsp" width="820">
 </p>
 
 <p align="center">
   <a href="#tools"><img src="https://img.shields.io/badge/CI--verified_tools-65%2F65-brightgreen.svg" alt="CI Coverage"></a>
   <a href="#multi-language-support"><img src="https://img.shields.io/badge/languages-30_CI--verified-brightgreen.svg" alt="Languages"></a>
   <a href="https://github.com/blackwell-systems/mcp-assert"><img src="https://raw.githubusercontent.com/blackwell-systems/mcp-assert/main/assets/badge-passing.svg?v=3" alt="mcp-assert: passing" height="20"></a>
-  <a href="https://agentskills.io"><img src="assets/badge-agentskills.svg" alt="Agent Skills"></a>
+  <a href="https://agentskills.io"><img src="../../assets/badge-agentskills.svg" alt="Agent Skills"></a>
   <a href="https://github.com/blackwell-systems/agent-lsp"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/blackwell-systems/agent-lsp/badges/assets/downloads-badge.json" alt="downloads"></a>
   <br>
   <a href="https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/"><img src="https://img.shields.io/badge/LSP-3.17-blue.svg" alt="LSP 3.17"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="../../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="https://github.com/punkpeye/awesome-mcp-servers"><img src="https://img.shields.io/badge/Awesome-MCP%20Servers-fc60a8" alt="Awesome MCP Servers"></a>
   <a href="https://github.com/blackwell-systems"><img src="https://raw.githubusercontent.com/blackwell-systems/blackwell-docs-theme/main/badge-trademark.svg" alt="Blackwell Systems"></a>
 </p>
@@ -90,11 +90,11 @@ agent-lsp هو **خادم MCP** يُنسِّق خوادم LSP القائمة (go
 
 يُعايِن `preview_edit` الأثر التشخيصي لأي تحرير. ترى بالضبط ما الذي سيتعطل قبل المساس بالملف. ويُقيِّم `simulate_chain` سلسلة من التحريرات المترابطة (إعادة تسمية دالة، وتحديث كل المُستدعِين، وتغيير نوع القيمة المُعادة) ويُبلِّغ عن الخطوة التي تُدخِل خطأً أولًا.
 
-8 أدوات تنفيذ تخميني. راجع [docs/guide/speculative-execution.md](./docs/guide/speculative-execution.md) للاطلاع على سير العمل الكامل.
+8 أدوات تنفيذ تخميني. راجع [docs/guide/speculative-execution.md](../../docs/guide/speculative-execution.md) للاطلاع على سير العمل الكامل.
 
 ### توفير الرموز
 
-تستخدم استجابات LSP المُهيكَلة **رموزًا أقل بمقدار 5-34 ضعفًا** من grep/read في المهام نفسها. على HashiCorp Consul (319 ألف سطر)، يستخدم تحليل نطاق الأثر 17.7 ميغابايت عبر grep مقابل 841 كيلوبايت عبر LSP، مُقلِّصًا 5,534 استدعاء أداة إلى 119. يتوسَّع التوفير مع حجم قاعدة الشيفرة. راجع [docs/guide/token-savings.md](./docs/guide/token-savings.md) للاطلاع على التجربة الكاملة عبر خمس قواعد شيفرة.
+تستخدم استجابات LSP المُهيكَلة **رموزًا أقل بمقدار 5-34 ضعفًا** من grep/read في المهام نفسها. على HashiCorp Consul (319 ألف سطر)، يستخدم تحليل نطاق الأثر 17.7 ميغابايت عبر grep مقابل 841 كيلوبايت عبر LSP، مُقلِّصًا 5,534 استدعاء أداة إلى 119. يتوسَّع التوفير مع حجم قاعدة الشيفرة. راجع [docs/guide/token-savings.md](../../docs/guide/token-savings.md) للاطلاع على التجربة الكاملة عبر خمس قواعد شيفرة.
 
 ### مُخرَجات مُحسَّنة للرموز (GCF)
 
@@ -106,7 +106,7 @@ agent-lsp هو **خادم MCP** يُنسِّق خوادم LSP القائمة (go
 | Graph | blast_radius، find_callers، explore_symbol، find_references، type_hierarchy، cross_repo، detect_changes، list_symbols | **79-84%** |
 | Graph + إزالة التكرار على مستوى الجلسة | نفسها، عبر [gcf-proxy](https://github.com/blackwell-systems/gcf-proxy) `--session` | **92.7%** (الاستدعاء الخامس) |
 
-تُحوَّل الاستجابات المُجمَّعة/المتداخلة (المُستدعُون تحت رمز، والتشخيصات مع معلومات متصلة) إلى جداول أيضًا، بما يوفِّر نحو 14% مقابل JSON على ذلك الشكل ([التفاصيل](./docs/guide/gcf-integration.md#nested-container-responses-grouped-data)).
+تُحوَّل الاستجابات المُجمَّعة/المتداخلة (المُستدعُون تحت رمز، والتشخيصات مع معلومات متصلة) إلى جداول أيضًا، بما يوفِّر نحو 14% مقابل JSON على ذلك الشكل ([التفاصيل](../../docs/guide/gcf-integration.md#nested-container-responses-grouped-data)).
 
 GCF مُفعَّلة افتراضيًا. للعودة إلى JSON:
 
@@ -114,7 +114,7 @@ GCF مُفعَّلة افتراضيًا. للعودة إلى JSON:
 export AGENT_LSP_OUTPUT_FORMAT=json
 ```
 
-قياس الأداء: `go run scripts/gcf-benchmark.go`. راجع [docs/guide/gcf-integration.md](./docs/guide/gcf-integration.md) للاطلاع على تفاصيل البنية.
+قياس الأداء: `go run scripts/gcf-benchmark.go`. راجع [docs/guide/gcf-integration.md](../../docs/guide/gcf-integration.md) للاطلاع على تفاصيل البنية.
 
 **GCF:** [gcformat.com](https://gcformat.com) · [Spec](https://github.com/blackwell-systems/gcf) · [Go](https://github.com/blackwell-systems/gcf-go) · [Python](https://github.com/blackwell-systems/gcf-python) · [TypeScript](https://github.com/blackwell-systems/gcf-typescript) · [Playground](https://gcformat.com/playground.html)
 
@@ -134,7 +134,7 @@ export AGENT_LSP_OUTPUT_FORMAT=json
 
 عندما يُفعِّل الوكيل مهارة، يُفحَص كل استدعاء أداة مقابل صلاحيات الطور الحالي. لا يمضي استدعاء `apply_edit` أثناء تحليل نطاق الأثر بصمت؛ بل يُعيد خطأً مع إرشاد استرداد محدد ("أكمِل طور blast_radius أولًا، الأدوات المسموح بها: [blast_radius, find_references]"). تتقدم الأطوار تلقائيًا مع استدعاء الوكيل أدوات من أطوار لاحقة.
 
-لا يفرض أيُّ مُزوِّد أدوات MCP آخر ترتيب سير العمل في زمن التشغيل. راجع [docs/guide/phase-enforcement.md](./docs/guide/phase-enforcement.md).
+لا يفرض أيُّ مُزوِّد أدوات MCP آخر ترتيب سير العمل في زمن التشغيل. راجع [docs/guide/phase-enforcement.md](../../docs/guide/phase-enforcement.md).
 
 ### تحليل التزامن
 
@@ -165,13 +165,13 @@ export AGENT_LSP_OUTPUT_FORMAT=json
 | [Cline](https://github.com/cline/cline) | stdio | `agent-lsp init` |
 | أي عميل MCP | HTTP+SSE | `agent-lsp --http --port 8080` |
 
-راجع [docs/getting-started/mcp-clients.md](./docs/getting-started/mcp-clients.md) للاطلاع على تهيئات جاهزة للنسخ واللصق.
+راجع [docs/getting-started/mcp-clients.md](../../docs/getting-started/mcp-clients.md) للاطلاع على تهيئات جاهزة للنسخ واللصق.
 
 ## المهارات
 
 تُتجاهَل الأدوات الخام. أما المهارات فتُستخدَم. تُرمِّز كل مهارة تسلسل الأدوات الصحيح بحيث تحدث سيرورات العمل فعلًا دون تعليمات تنسيق لكل مُوجَّه. تتوفر المهارات كأوامر شرطة مائلة عبر [AgentSkills](https://github.com/anthropics/agent-skills) وكمُوجَّهات MCP عبر `prompts/list` / `prompts/get` لأي عميل MCP.
 
-راجع [docs/guide/skills.md](./docs/guide/skills.md) للاطلاع على الأوصاف الكاملة وإرشادات الاستخدام.
+راجع [docs/guide/skills.md](../../docs/guide/skills.md) للاطلاع على الأوصاف الكاملة وإرشادات الاستخدام.
 
 **قبل أن تُغيِّر أي شيء**
 
@@ -257,7 +257,7 @@ docker run --rm \
   --http --port 8080 go:gopls
 ```
 
-تعمل الصور افتراضيًا بمستخدم غير جذر (uid 65532). عيِّن `AGENT_LSP_TOKEN` عبر متغير بيئة، ولا تستخدم `--token` في سطر الأوامر أبدًا. تُنسَخ الصور أيضًا إلى Docker Hub (`blackwellsystems/agent-lsp`). راجع [DOCKER.md](./DOCKER.md) للاطلاع على قائمة الوسوم الكاملة، وإعداد وضع HTTP، وخيارات تعزيز الأمان.
+تعمل الصور افتراضيًا بمستخدم غير جذر (uid 65532). عيِّن `AGENT_LSP_TOKEN` عبر متغير بيئة، ولا تستخدم `--token` في سطر الأوامر أبدًا. تُنسَخ الصور أيضًا إلى Docker Hub (`blackwellsystems/agent-lsp`). راجع [DOCKER.md](../../DOCKER.md) للاطلاع على قائمة الوسوم الكاملة، وإعداد وضع HTTP، وخيارات تعزيز الأمان.
 
 ## الإعداد
 
@@ -318,7 +318,7 @@ go install github.com/blackwell-systems/agent-lsp/cmd/agent-lsp@latest
 | C / C++ | `clangd` | `apt install clangd` / `brew install llvm` |
 | Ruby | `solargraph` | `gem install solargraph` |
 
-القائمة الكاملة للغات المدعومة الـ32 في [docs/reference/language-support.md](./docs/reference/language-support.md).
+القائمة الكاملة للغات المدعومة الـ32 في [docs/reference/language-support.md](../../docs/reference/language-support.md).
 
 ### الخطوة 3: تحقَّق من الإعداد
 
@@ -326,7 +326,7 @@ go install github.com/blackwell-systems/agent-lsp/cmd/agent-lsp@latest
 agent-lsp doctor
 ```
 
-يفحص كل خادم لغة مُهيَّأ ويُبلِّغ عن قدراته. أصلِح أي إخفاقات قبل المتابعة. راجع [دعم اللغات](./docs/reference/language-support.md) للاطلاع على أوامر التثبيت والملاحظات الخاصة بكل خادم.
+يفحص كل خادم لغة مُهيَّأ ويُبلِّغ عن قدراته. أصلِح أي إخفاقات قبل المتابعة. راجع [دعم اللغات](../../docs/reference/language-support.md) للاطلاع على أوامر التثبيت والملاحظات الخاصة بكل خادم.
 
 ### الخطوة 4: هيِّئ أداة الذكاء الاصطناعي لديك
 
@@ -382,7 +382,7 @@ cd /tmp/agent-lsp-skills/skills && ./install.sh --copy
 
 بدون هذا، سيطلب Claude Code الإذن عند كل استدعاء أداة. تتعامل عملاء MCP الآخرون مع الصلاحيات بشكل مختلف؛ راجع وثائق عميلك.
 
-المهارات سيرورات عمل متعددة الأدوات تُرمِّز إجراءات موثوقة: فحص نطاق الأثر قبل التحرير، ومعاينة تخمينية قبل الكتابة، وتشغيل الاختبارات بعد التغيير. راجع [docs/guide/skills.md](./docs/guide/skills.md) للاطلاع على القائمة الكاملة.
+المهارات سيرورات عمل متعددة الأدوات تُرمِّز إجراءات موثوقة: فحص نطاق الأثر قبل التحرير، ومعاينة تخمينية قبل الكتابة، وتشغيل الاختبارات بعد التغيير. راجع [docs/guide/skills.md](../../docs/guide/skills.md) للاطلاع على القائمة الكاملة.
 
 ### الخطوة 7: ابدأ العمل
 
@@ -426,30 +426,30 @@ start_lsp(root_dir="/your/project")
 
 Go وPython وTypeScript وRust وJava وC وC++ وC# وRuby وPHP وKotlin وSwift وScala وZig وLua وElixir وGleam وClojure وDart وTerraform وNix وPrisma وSQL وMongoDB وJavaScript وYAML وJSON وDockerfile وCSS وHTML وMQL.
 
-راجع [docs/reference/language-support.md](./docs/reference/language-support.md) للاطلاع على مصفوفة التغطية الكاملة.
+راجع [docs/reference/language-support.md](../../docs/reference/language-support.md) للاطلاع على مصفوفة التغطية الكاملة.
 
 ## الأدوات
 
 65 أداة تُغطي التنقل والتحليل وإعادة الهيكلة وتحرير الرموز والاستكشاف المُركَّب والتحرير الآمن والتنفيذ التخميني ودورة حياة الجلسة. جميعها مُتحقَّق منها عبر CI.
 
-راجع [docs/reference/tools.md](./docs/reference/tools.md) للاطلاع على المرجع الكامل مع المُعامِلات والأمثلة.
+راجع [docs/reference/tools.md](../../docs/reference/tools.md) للاطلاع على المرجع الكامل مع المُعامِلات والأمثلة.
 
 ## قراءات إضافية
 
 ### التوثيق
 
-- [مرجع الأدوات](./docs/reference/tools.md): مرجع أدوات كامل مع المُعامِلات والأمثلة
-- [مرجع المهارات](./docs/guide/skills.md): مرجع المهارات وسيرورات العمل وحالات الاستخدام والتركيب
-- [دعم اللغات](./docs/reference/language-support.md): مصفوفة تغطية اللغات
-- [البنية](./docs/architecture/architecture.md): تصميم النظام وآلياته الداخلية
-- [التنفيذ التخميني](./docs/guide/speculative-execution.md): سيرورات عمل "حاكِ ثم طبِّق"
-- [توافق LSP](./docs/reference/lsp-conformance.md): تغطية مواصفة LSP 3.17
-- [Docker](./DOCKER.md): وسوم Docker وcompose وتخزين الأحجام مؤقتًا
+- [مرجع الأدوات](../../docs/reference/tools.md): مرجع أدوات كامل مع المُعامِلات والأمثلة
+- [مرجع المهارات](../../docs/guide/skills.md): مرجع المهارات وسيرورات العمل وحالات الاستخدام والتركيب
+- [دعم اللغات](../../docs/reference/language-support.md): مصفوفة تغطية اللغات
+- [البنية](../../docs/architecture/architecture.md): تصميم النظام وآلياته الداخلية
+- [التنفيذ التخميني](../../docs/guide/speculative-execution.md): سيرورات عمل "حاكِ ثم طبِّق"
+- [توافق LSP](../../docs/reference/lsp-conformance.md): تغطية مواصفة LSP 3.17
+- [Docker](../../DOCKER.md): وسوم Docker وcompose وتخزين الأحجام مؤقتًا
 
 ### المساهمة
 
-- [ملاحظات CI](./docs/architecture/ci-notes.md): خصائص CI وتفاصيل عُدَّة الاختبار
-- [التوزيع](./docs/architecture/distribution.md): قنوات التثبيت وخط الإصدار
+- [ملاحظات CI](../../docs/architecture/ci-notes.md): خصائص CI وتفاصيل عُدَّة الاختبار
+- [التوزيع](../../docs/architecture/distribution.md): قنوات التثبيت وخط الإصدار
 
 ## التطوير
 
@@ -474,7 +474,7 @@ defer client.Shutdown(ctx)
 locs, err := client.GetDefinition(ctx, fileURI, lsp.Position{Line: 10, Character: 4})
 ```
 
-راجع [docs/architecture/architecture.md](./docs/architecture/architecture.md) للاطلاع على واجهة برمجة الحزم الكاملة.
+راجع [docs/architecture/architecture.md](../../docs/architecture/architecture.md) للاطلاع على واجهة برمجة الحزم الكاملة.
 
 ## الرخصة
 

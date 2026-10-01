@@ -29,7 +29,7 @@ jobs:
         run: go vet ./...
 
       - name: Install gopls (for live rename integration test)
-        run: go install golang.org/x/tools/gopls@latest
+        run: go install golang.org/x/tools/gopls@v0.23.0
 
       - name: Unit tests
         run: go test ./internal/... ./cmd/...
@@ -80,7 +80,7 @@ jobs:
         run: GOWORK=off go build ./...
 
       - name: Install gopls
-        run: go install golang.org/x/tools/gopls@latest
+        run: go install golang.org/x/tools/gopls@v0.23.0
 
       - name: Install TypeScript language server
         run: npm install -g typescript-language-server typescript
@@ -94,12 +94,16 @@ jobs:
           components: rust-analyzer
 
       - name: Install kotlin-language-server
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          KLS_VERSION=$(curl -fsSL -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/fwcd/kotlin-language-server/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          # Pinned with a checksum, not "releases/latest": the Tier-2 baseline is
+          # derived from a specific server version (see the multi-lang-mql job).
+          # Upstream publishes no checksums; this is the sha256 of the release
+          # asset CI was already running. Bump both fields together after
+          # re-verifying the Kotlin baseline against the new release.
+          KLS_VERSION=1.3.13
+          KLS_SHA256=4fe7d71d087b307c7869036171bd9d8c6a4284cd7c25b89098b0a24eb2d9b6d2
           wget -q "https://github.com/fwcd/kotlin-language-server/releases/download/${KLS_VERSION}/server.zip" -O /tmp/kls.zip
+          echo "${KLS_SHA256}  /tmp/kls.zip" | sha256sum -c -
           sudo unzip -q /tmp/kls.zip -d /opt/kls
           sudo ln -sf /opt/kls/server/bin/kotlin-language-server /usr/local/bin/kotlin-language-server
 
@@ -130,9 +134,12 @@ jobs:
 
       - name: Install jdtls
         run: |
-          # Resolve the latest snapshot URL via redirect and download with error checking
-          JDTLS_URL="https://download.eclipse.org/jdtls/snapshots/jdt-language-server-latest.tar.gz"
+          # Pinned to a specific snapshot build with its sha256 (matches upstream's
+          # .sha256), not the moving jdt-language-server-latest. Eclipse keeps
+          # snapshots for months; bump when this one is pruned or to re-baseline.
+          JDTLS_URL="https://download.eclipse.org/jdtls/snapshots/jdt-language-server-1.62.0-202609282153.tar.gz"
           wget --no-verbose "$JDTLS_URL" -O /tmp/jdtls.tar.gz
+          echo "d1d09e812d1f29655f341544fb117e9c68aa8b46a3fe13dce16b3a4294e80fac  /tmp/jdtls.tar.gz" | sha256sum -c -
           # Verify the download is a valid gzip file before extracting
           file /tmp/jdtls.tar.gz
           sudo mkdir -p /opt/jdtls
@@ -253,11 +260,13 @@ jobs:
         run: GOWORK=off go build ./...
 
       - name: Install terraform-ls
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TF_LS_VERSION=$(curl -fsSL -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/hashicorp/terraform-ls/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
+          # Pinned with a checksum (sha256 of the release asset CI verified), not
+          # "releases/latest"; see the multi-lang-mql job. Bump both together.
+          TF_LS_VERSION=0.39.0
+          TF_LS_SHA256=7750edc736845fd8c04ff0fc6332423c12d8275b358668c8c17e8aedc43ef971
           wget -q "https://releases.hashicorp.com/terraform-ls/${TF_LS_VERSION}/terraform-ls_${TF_LS_VERSION}_linux_amd64.zip" -O /tmp/terraform-ls.zip
+          echo "${TF_LS_SHA256}  /tmp/terraform-ls.zip" | sha256sum -c -
           sudo unzip -o -q /tmp/terraform-ls.zip terraform-ls -d /usr/local/bin
           sudo chmod +x /usr/local/bin/terraform-ls
 
@@ -279,12 +288,16 @@ jobs:
         run: GOWORK=off go build ./...
 
       - name: Install lua-language-server
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          LLS_VERSION=$(curl -fsSL -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/LuaLS/lua-language-server/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          # Pinned with a checksum, not "releases/latest" (see the multi-lang-mql
+          # job). Upstream publishes no checksums; this is the sha256 of the
+          # release asset CI was already running. Bump both fields together after
+          # re-verifying the Lua baseline against the new release.
+          LLS_VERSION=3.19.1
+          LLS_SHA256=e9235d2d72ef55bc41cf8c99cda2ed64777682024b4bb81f5dea425060c5cbb8
           echo "Installing lua-language-server ${LLS_VERSION}"
           wget -q "https://github.com/LuaLS/lua-language-server/releases/download/${LLS_VERSION}/lua-language-server-${LLS_VERSION}-linux-x64.tar.gz" -O /tmp/lls.tar.gz
+          echo "${LLS_SHA256}  /tmp/lls.tar.gz" | sha256sum -c -
           sudo mkdir -p /opt/lls
           sudo tar -xzf /tmp/lls.tar.gz -C /opt/lls
           sudo ln -sf /opt/lls/bin/lua-language-server /usr/local/bin/lua-language-server
@@ -315,13 +328,17 @@ jobs:
           # go_to_type_definition / go_to_implementation timing-sensitive on the
           # runner). Bump both fields together after re-deriving the baseline
           # against the new release.
-          # v2.4.2 fixes the upstream defects filed from our v2.4.1 integration:
-          # constructor-style declarations did not parse (#76, PR #80 — the root
-          # cause of the #62-era fallbacks) and signatureHelp returned the
-          # containing function's signature (#77, PR #81). Requires the
-          # open_document fix that sends real file content in didOpen (session.go).
-          MQL_VERSION=v2.4.2
-          MQL_SHA256=87fb244baac04da48d9da62507943801ebccd7adf3cb0300134070896bf87ba0
+          # v2.4.2 fixed the upstream defects filed from our v2.4.1 integration
+          # (constructor-style declarations did not parse, #76/PR #80; signatureHelp
+          # returned the containing function's signature, #77/PR #81). v2.5.0 adds
+          # the LSP 3.17 pull-diagnostics fix (#90-#96): textDocument/diagnostic
+          # no longer hangs and wedges the server (#91), the server declares
+          # diagnosticProvider, and cross-file resolution is deterministic. The
+          # baseline was re-verified against v2.5.0 with the agent-lsp pull
+          # fallback enabled. Requires the open_document fix that sends real file
+          # content in didOpen (session.go).
+          MQL_VERSION=v2.5.0
+          MQL_SHA256=3706297897f64c4cb8425eacf8a1cecd728773d1750eaf061e8296918ffeded1
           echo "Installing mql-lsp-server ${MQL_VERSION}"
           wget -q "https://github.com/davalillo/mql-language-server/releases/download/${MQL_VERSION}/mql-lsp-server-linux-x64" -O /tmp/mql-lsp-server
           echo "${MQL_SHA256}  /tmp/mql-lsp-server" | sha256sum -c -
@@ -344,12 +361,14 @@ jobs:
         run: GOWORK=off go build ./...
 
       - name: Install luau-lsp
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          LLSP_VERSION=$(curl -fsSL -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/JohnnyMorganz/luau-lsp/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          # Pinned with a checksum (sha256 of the release asset CI verified), not
+          # "releases/latest"; see the multi-lang-mql job. Bump both together.
+          LLSP_VERSION=1.70.1
+          LLSP_SHA256=1a2ea1ae4f98f8946cefd970a4b54853e11ab4775e6932faa7f60cf920346567
           echo "Installing luau-lsp ${LLSP_VERSION}"
           wget -q "https://github.com/JohnnyMorganz/luau-lsp/releases/download/${LLSP_VERSION}/luau-lsp-linux-x86_64.zip" -O /tmp/luau-lsp.zip
+          echo "${LLSP_SHA256}  /tmp/luau-lsp.zip" | sha256sum -c -
           sudo mkdir -p /opt/luau-lsp
           sudo unzip -o -q /tmp/luau-lsp.zip -d /opt/luau-lsp
           sudo chmod +x /opt/luau-lsp/luau-lsp
@@ -397,16 +416,21 @@ jobs:
         run: GOWORK=off go build ./...
 
       - name: Install Coursier + metals
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Use cs bootstrap with explicit Maven coordinates — bypasses the app catalog entirely
           # (cs install hits io.get-coursier:apps from Maven Central which 403s in CI)
-          CS_VERSION=$(curl -fsSL -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/coursier/coursier/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
-          curl -fL "https://github.com/coursier/coursier/releases/download/v${CS_VERSION}/cs-x86_64-pc-linux.gz" | gzip -d > /tmp/cs
+          # Pinned with a checksum (sha256 of the release asset CI verified), not
+          # "releases/latest"; see the multi-lang-mql job. Bump both together.
+          # metals is fetched by coursier from Maven Central, which verifies artifact
+          # checksums itself, so its version pin is enough.
+          CS_VERSION=2.1.25
+          CS_SHA256=415fa0e9514dcffd521eca13dbf05bddaf3f542795faec728021defcaa25abdf
+          METALS_VERSION=1.6.9
+          curl -fsSL "https://github.com/coursier/coursier/releases/download/v${CS_VERSION}/cs-x86_64-pc-linux.gz" -o /tmp/cs.gz
+          echo "${CS_SHA256}  /tmp/cs.gz" | sha256sum -c -
+          gzip -dc /tmp/cs.gz > /tmp/cs
           chmod +x /tmp/cs
           sudo mv /tmp/cs /usr/local/bin/cs
-          METALS_VERSION=$(curl -fsSL -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/scalameta/metals/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
           cs bootstrap "org.scalameta:metals_2.13:${METALS_VERSION}" -o /tmp/metals
           sudo mv /tmp/metals /usr/local/bin/metals
           sudo chmod +x /usr/local/bin/metals
@@ -459,11 +483,13 @@ jobs:
         run: GOWORK=off go build ./...
 
       - name: Install Gleam
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          GLEAM_VERSION=$(curl -fsSL -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/gleam-lang/gleam/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
+          # Pinned with a checksum (sha256 of the release asset CI verified), not
+          # "releases/latest"; see the multi-lang-mql job. Bump both together.
+          GLEAM_VERSION=1.18.1
+          GLEAM_SHA256=4955a38c2e8c99457458e2471472ccd5ee3c45bd7637a315ce33bccf0dd75d9e
           wget -q "https://github.com/gleam-lang/gleam/releases/download/v${GLEAM_VERSION}/gleam-v${GLEAM_VERSION}-x86_64-unknown-linux-musl.tar.gz" -O /tmp/gleam.tar.gz
+          echo "${GLEAM_SHA256}  /tmp/gleam.tar.gz" | sha256sum -c -
           sudo tar -xzf /tmp/gleam.tar.gz -C /usr/local/bin
 
       - name: Build Gleam fixture
@@ -524,7 +550,7 @@ jobs:
         run: GOWORK=off go build ./...
 
       - name: Install gopls
-        run: go install golang.org/x/tools/gopls@latest
+        run: go install golang.org/x/tools/gopls@v0.23.0
 
       - name: Install TypeScript language server
         run: npm install -g typescript-language-server typescript
@@ -554,7 +580,9 @@ jobs:
       - name: Install jdtls
         continue-on-error: true
         run: |
-          wget -q "https://download.eclipse.org/jdtls/snapshots/jdt-language-server-latest.tar.gz" -O /tmp/jdtls.tar.gz
+          # Same pinned snapshot as the multi-lang-java job.
+          wget -q "https://download.eclipse.org/jdtls/snapshots/jdt-language-server-1.62.0-202609282153.tar.gz" -O /tmp/jdtls.tar.gz
+          echo "d1d09e812d1f29655f341544fb117e9c68aa8b46a3fe13dce16b3a4294e80fac  /tmp/jdtls.tar.gz" | sha256sum -c -
           sudo mkdir -p /opt/jdtls
           sudo tar -xzf /tmp/jdtls.tar.gz -C /opt/jdtls
           # jdtls writes log files to config_linux/ — must be writable by runner user
@@ -610,7 +638,7 @@ jobs:
         run: psql -h localhost -U postgres -d testdb -f test/fixtures/sql/schema.sql
 
       - name: Install sqls
-        run: go install github.com/sqls-server/sqls@latest
+        run: go install github.com/sqls-server/sqls@v0.2.48
 
       - name: Run SQL tests
         run: GOWORK=off go test -v -run "TestMultiLanguage/^SQL$" ./test/ -timeout 10m
@@ -630,11 +658,13 @@ jobs:
         run: GOWORK=off go build ./...
 
       - name: Install clojure-lsp
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          CLOJURE_LSP_VERSION=$(curl -fsSL -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/clojure-lsp/clojure-lsp/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          # Pinned with a checksum (sha256 of the release asset CI verified), not
+          # "releases/latest"; see the multi-lang-mql job. Bump both together.
+          CLOJURE_LSP_VERSION=2026.07.06-14.34.19
+          CLOJURE_LSP_SHA256=520f724ee02f4b3ecb225395a7a5a4ccad3878d6d1418240cd9636afcf9b858e
           wget -q "https://github.com/clojure-lsp/clojure-lsp/releases/download/${CLOJURE_LSP_VERSION}/clojure-lsp-native-linux-amd64.zip" -O /tmp/clojure-lsp.zip
+          echo "${CLOJURE_LSP_SHA256}  /tmp/clojure-lsp.zip" | sha256sum -c -
           sudo unzip -q /tmp/clojure-lsp.zip -d /usr/local/bin
           sudo chmod +x /usr/local/bin/clojure-lsp
 
@@ -721,11 +751,13 @@ jobs:
         run: GOWORK=off go build ./...
 
       - name: Install mongodb-language-server (from VS Code extension VSIX)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          MDBVSC_VERSION=$(curl -fsSL -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/mongodb-js/vscode/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
+          # Pinned with a checksum (sha256 of the release asset CI verified), not
+          # "releases/latest"; see the multi-lang-mql job. Bump both together.
+          MDBVSC_VERSION=1.18.0
+          MDBVSC_SHA256=30be383d2559a16f5a47215515dec8b115f64fd5d08aab744de97d4aeb6a12b0
           wget -q "https://github.com/mongodb-js/vscode/releases/download/v${MDBVSC_VERSION}/mongodb-vscode-${MDBVSC_VERSION}.vsix" -O /tmp/mongodb-vscode.vsix
+          echo "${MDBVSC_SHA256}  /tmp/mongodb-vscode.vsix" | sha256sum -c -
           sudo mkdir -p /opt/mongodb-vscode
           sudo unzip -q /tmp/mongodb-vscode.vsix -d /opt/mongodb-vscode
           printf '#!/bin/bash\nexec node /opt/mongodb-vscode/extension/dist/languageServer.js "$@"\n' | sudo tee /usr/local/bin/mongodb-language-server > /dev/null
@@ -789,7 +821,7 @@ jobs:
         run: GOWORK=off go build -o /usr/local/bin/agent-lsp ./cmd/agent-lsp
 
       - name: Install gopls
-        run: go install golang.org/x/tools/gopls@latest
+        run: go install golang.org/x/tools/gopls@v0.23.0
 
       - name: Install mcp-assert
         run: |
@@ -845,7 +877,7 @@ jobs:
         run: GOWORK=off go build ./...
 
       - name: Install gopls
-        run: go install golang.org/x/tools/gopls@latest
+        run: go install golang.org/x/tools/gopls@v0.23.0
 
       - name: Run get_change_impact test
         run: GOWORK=off go test -v -run TestGetChangeImpact ./test/ -timeout 8m
@@ -864,7 +896,7 @@ jobs:
         run: GOWORK=off go build ./...
 
       - name: Install gopls
-        run: go install golang.org/x/tools/gopls@latest
+        run: go install golang.org/x/tools/gopls@v0.23.0
 
       - name: Run get_cross_repo_references test
         run: GOWORK=off go test -v -run TestGetCrossRepoReferences ./test/ -timeout 5m

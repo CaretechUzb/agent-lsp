@@ -182,7 +182,7 @@ func RunBroker(cfg BrokerConfig) error {
 	// whose server crashed (or was killed) stays registered and answers every
 	// request with an error until the inactivity timeout.
 	client.mu.Lock()
-	serverExited := client.exitDone
+	serverExited := client.procDone
 	client.mu.Unlock()
 
 	// Inactivity timer.

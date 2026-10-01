@@ -58,8 +58,8 @@ func TestEncode_Nil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error for nil: %v", err)
 	}
-	if result != "" {
-		t.Errorf("expected empty string for nil, got: %q", result)
+	if result != "null" {
+		t.Errorf("expected \"null\" for nil, got: %q", result)
 	}
 }
 

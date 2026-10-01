@@ -1,18 +1,18 @@
 [English](../../README.md) · **简体中文** · [Русский](README.ru.md) · [हिन्दी](README.hi.md) · [العربية](README.ar.md)
 
 <p align="center">
-  <img src="assets/banner.png" alt="agent-lsp" width="820">
+  <img src="../../assets/banner.png" alt="agent-lsp" width="820">
 </p>
 
 <p align="center">
   <a href="#tools"><img src="https://img.shields.io/badge/CI--verified_tools-65%2F65-brightgreen.svg" alt="CI Coverage"></a>
   <a href="#multi-language-support"><img src="https://img.shields.io/badge/languages-30_CI--verified-brightgreen.svg" alt="Languages"></a>
   <a href="https://github.com/blackwell-systems/mcp-assert"><img src="https://raw.githubusercontent.com/blackwell-systems/mcp-assert/main/assets/badge-passing.svg?v=3" alt="mcp-assert: passing" height="20"></a>
-  <a href="https://agentskills.io"><img src="assets/badge-agentskills.svg" alt="Agent Skills"></a>
+  <a href="https://agentskills.io"><img src="../../assets/badge-agentskills.svg" alt="Agent Skills"></a>
   <a href="https://github.com/blackwell-systems/agent-lsp"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/blackwell-systems/agent-lsp/badges/assets/downloads-badge.json" alt="downloads"></a>
   <br>
   <a href="https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/"><img src="https://img.shields.io/badge/LSP-3.17-blue.svg" alt="LSP 3.17"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="../../LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <a href="https://github.com/punkpeye/awesome-mcp-servers"><img src="https://img.shields.io/badge/Awesome-MCP%20Servers-fc60a8" alt="Awesome MCP Servers"></a>
   <a href="https://github.com/blackwell-systems"><img src="https://raw.githubusercontent.com/blackwell-systems/blackwell-docs-theme/main/badge-trademark.svg" alt="Blackwell Systems"></a>
 </p>
@@ -90,11 +90,11 @@ agent-lsp 的 CI 在每次推送时都会针对真实的固定装置代码库运
 
 `preview_edit` 预览任何编辑的诊断影响。你可以在文件被触及之前精确看到什么会被破坏。`simulate_chain` 评估一系列相互依赖的编辑（重命名一个函数、更新所有调用方、更改返回类型），并报告哪一步首先引入了错误。
 
-8 个推测式执行工具。完整工作流参见 [docs/guide/speculative-execution.md](./docs/guide/speculative-execution.md)。
+8 个推测式执行工具。完整工作流参见 [docs/guide/speculative-execution.md](../../docs/guide/speculative-execution.md)。
 
 ### Token 节省
 
-在相同任务上，结构化的 LSP 响应比 grep/read 使用的 token **少 5-34 倍**。在 HashiCorp Consul（31.9 万行代码）上，一次影响范围分析通过 grep 使用 17.7MB，而通过 LSP 仅使用 841KB，将 5,534 次工具调用减少到 119 次。节省效果随代码库规模而扩大。完整实验（涵盖五个代码库）参见 [docs/guide/token-savings.md](./docs/guide/token-savings.md)。
+在相同任务上，结构化的 LSP 响应比 grep/read 使用的 token **少 5-34 倍**。在 HashiCorp Consul（31.9 万行代码）上，一次影响范围分析通过 grep 使用 17.7MB，而通过 LSP 仅使用 841KB，将 5,534 次工具调用减少到 119 次。节省效果随代码库规模而扩大。完整实验（涵盖五个代码库）参见 [docs/guide/token-savings.md](../../docs/guide/token-savings.md)。
 
 ### Token 优化输出（GCF）
 
@@ -106,7 +106,7 @@ agent-lsp 的 CI 在每次推送时都会针对真实的固定装置代码库运
 | Graph | blast_radius、find_callers、explore_symbol、find_references、type_hierarchy、cross_repo、detect_changes、list_symbols | **79-84%** |
 | Graph + 会话去重 | 相同，通过 [gcf-proxy](https://github.com/blackwell-systems/gcf-proxy) `--session` | **92.7%**（第 5 次调用） |
 
-分组/嵌套的响应（符号下的调用方、带相关信息的诊断）也会被表格化，在该形态下相对 JSON 约节省 14%（[详情](./docs/guide/gcf-integration.md#nested-container-responses-grouped-data)）。
+分组/嵌套的响应（符号下的调用方、带相关信息的诊断）也会被表格化，在该形态下相对 JSON 约节省 14%（[详情](../../docs/guide/gcf-integration.md#nested-container-responses-grouped-data)）。
 
 GCF 默认启用。若要还原为 JSON：
 
@@ -114,7 +114,7 @@ GCF 默认启用。若要还原为 JSON：
 export AGENT_LSP_OUTPUT_FORMAT=json
 ```
 
-基准测试：`go run scripts/gcf-benchmark.go`。架构细节参见 [docs/guide/gcf-integration.md](./docs/guide/gcf-integration.md)。
+基准测试：`go run scripts/gcf-benchmark.go`。架构细节参见 [docs/guide/gcf-integration.md](../../docs/guide/gcf-integration.md)。
 
 **GCF：** [gcformat.com](https://gcformat.com) · [Spec](https://github.com/blackwell-systems/gcf) · [Go](https://github.com/blackwell-systems/gcf-go) · [Python](https://github.com/blackwell-systems/gcf-python) · [TypeScript](https://github.com/blackwell-systems/gcf-typescript) · [Playground](https://gcformat.com/playground.html)
 
@@ -134,7 +134,7 @@ Python 和 TypeScript 项目在 `find_references` 可用之前需要数分钟的
 
 当智能体激活一个技能时，每一次工具调用都会根据当前阶段的权限进行检查。在影响范围分析期间调用 `apply_edit` 不会悄然继续；它会返回一个带有具体恢复指引的错误（“请先完成 blast_radius 阶段，允许的工具：[blast_radius, find_references]”）。随着智能体调用后续阶段的工具，阶段会自动推进。
 
-没有其他 MCP 工具提供方在运行时强制工作流顺序。参见 [docs/guide/phase-enforcement.md](./docs/guide/phase-enforcement.md)。
+没有其他 MCP 工具提供方在运行时强制工作流顺序。参见 [docs/guide/phase-enforcement.md](../../docs/guide/phase-enforcement.md)。
 
 ### 并发分析
 
@@ -165,13 +165,13 @@ Python 和 TypeScript 项目在 `find_references` 可用之前需要数分钟的
 | [Cline](https://github.com/cline/cline) | stdio | `agent-lsp init` |
 | 任何 MCP 客户端 | HTTP+SSE | `agent-lsp --http --port 8080` |
 
-复制粘贴即用的配置参见 [docs/getting-started/mcp-clients.md](./docs/getting-started/mcp-clients.md)。
+复制粘贴即用的配置参见 [docs/getting-started/mcp-clients.md](../../docs/getting-started/mcp-clients.md)。
 
 ## 技能
 
 原始工具会被忽略。技能会被使用。每个技能都编码了正确的工具序列，使工作流无需逐提示的编排指令就能真正发生。技能既作为 [AgentSkills](https://github.com/anthropics/agent-skills) 斜杠命令提供，也作为 MCP 提示通过 `prompts/list` / `prompts/get` 供任何 MCP 客户端使用。
 
-完整描述和使用指引参见 [docs/guide/skills.md](./docs/guide/skills.md)。
+完整描述和使用指引参见 [docs/guide/skills.md](../../docs/guide/skills.md)。
 
 **在你更改任何内容之前**
 
@@ -257,7 +257,7 @@ docker run --rm \
   --http --port 8080 go:gopls
 ```
 
-镜像默认以非 root 用户（uid 65532）运行。请通过环境变量设置 `AGENT_LSP_TOKEN`，切勿在命令行上使用 `--token`。镜像同时镜像到 Docker Hub（`blackwellsystems/agent-lsp`）。完整标签列表、HTTP 模式设置和安全加固选项参见 [DOCKER.md](./DOCKER.md)。
+镜像默认以非 root 用户（uid 65532）运行。请通过环境变量设置 `AGENT_LSP_TOKEN`，切勿在命令行上使用 `--token`。镜像同时镜像到 Docker Hub（`blackwellsystems/agent-lsp`）。完整标签列表、HTTP 模式设置和安全加固选项参见 [DOCKER.md](../../DOCKER.md)。
 
 ## 设置
 
@@ -318,7 +318,7 @@ go install github.com/blackwell-systems/agent-lsp/cmd/agent-lsp@latest
 | C / C++ | `clangd` | `apt install clangd` / `brew install llvm` |
 | Ruby | `solargraph` | `gem install solargraph` |
 
-32 种支持语言的完整列表参见 [docs/reference/language-support.md](./docs/reference/language-support.md)。
+32 种支持语言的完整列表参见 [docs/reference/language-support.md](../../docs/reference/language-support.md)。
 
 ### 第 3 步：验证设置
 
@@ -326,7 +326,7 @@ go install github.com/blackwell-systems/agent-lsp/cmd/agent-lsp@latest
 agent-lsp doctor
 ```
 
-探测每个已配置的语言服务器并报告其能力。在继续之前修复任何失败项。安装命令和服务器特定说明参见[语言支持](./docs/reference/language-support.md)。
+探测每个已配置的语言服务器并报告其能力。在继续之前修复任何失败项。安装命令和服务器特定说明参见[语言支持](../../docs/reference/language-support.md)。
 
 ### 第 4 步：配置你的 AI 工具
 
@@ -382,7 +382,7 @@ cd /tmp/agent-lsp-skills/skills && ./install.sh --copy
 
 若没有这一项，Claude Code 会在每次工具调用时请求权限。其他 MCP 客户端处理权限的方式不同；请查阅你客户端的文档。
 
-技能是编码了可靠流程的多工具工作流：编辑前的影响范围检查、写入前的推测式预览、更改后的测试运行。完整列表参见 [docs/guide/skills.md](./docs/guide/skills.md)。
+技能是编码了可靠流程的多工具工作流：编辑前的影响范围检查、写入前的推测式预览、更改后的测试运行。完整列表参见 [docs/guide/skills.md](../../docs/guide/skills.md)。
 
 ### 第 7 步：开始工作
 
@@ -426,30 +426,30 @@ start_lsp(root_dir="/your/project")
 
 Go、Python、TypeScript、Rust、Java、C、C++、C#、Ruby、PHP、Kotlin、Swift、Scala、Zig、Lua、Elixir、Gleam、Clojure、Dart、Terraform、Nix、Prisma、SQL、MongoDB、JavaScript、YAML、JSON、Dockerfile、CSS、HTML、MQL。
 
-完整的覆盖矩阵参见 [docs/reference/language-support.md](./docs/reference/language-support.md)。
+完整的覆盖矩阵参见 [docs/reference/language-support.md](../../docs/reference/language-support.md)。
 
 ## 工具
 
 65 个工具，涵盖导航、分析、重构、符号编辑、组合式探索、安全编辑、推测式执行以及会话生命周期。全部经 CI 验证。
 
-带参数和示例的完整参考参见 [docs/reference/tools.md](./docs/reference/tools.md)。
+带参数和示例的完整参考参见 [docs/reference/tools.md](../../docs/reference/tools.md)。
 
 ## 延伸阅读
 
 ### 文档
 
-- [工具参考](./docs/reference/tools.md)：带参数和示例的完整工具参考
-- [技能参考](./docs/guide/skills.md)：技能参考、工作流、使用场景与组合
-- [语言支持](./docs/reference/language-support.md)：语言覆盖矩阵
-- [架构](./docs/architecture/architecture.md)：系统设计与内部原理
-- [推测式执行](./docs/guide/speculative-execution.md)：模拟后再应用的工作流
-- [LSP 一致性](./docs/reference/lsp-conformance.md)：LSP 3.17 规范覆盖情况
-- [Docker](./DOCKER.md)：Docker 标签、compose 和卷缓存
+- [工具参考](../../docs/reference/tools.md)：带参数和示例的完整工具参考
+- [技能参考](../../docs/guide/skills.md)：技能参考、工作流、使用场景与组合
+- [语言支持](../../docs/reference/language-support.md)：语言覆盖矩阵
+- [架构](../../docs/architecture/architecture.md)：系统设计与内部原理
+- [推测式执行](../../docs/guide/speculative-execution.md)：模拟后再应用的工作流
+- [LSP 一致性](../../docs/reference/lsp-conformance.md)：LSP 3.17 规范覆盖情况
+- [Docker](../../DOCKER.md)：Docker 标签、compose 和卷缓存
 
 ### 贡献
 
-- [CI 说明](./docs/architecture/ci-notes.md)：CI 的特殊之处和测试框架细节
-- [分发](./docs/architecture/distribution.md)：安装渠道和发布流水线
+- [CI 说明](../../docs/architecture/ci-notes.md)：CI 的特殊之处和测试框架细节
+- [分发](../../docs/architecture/distribution.md)：安装渠道和发布流水线
 
 ## 开发
 
@@ -474,7 +474,7 @@ defer client.Shutdown(ctx)
 locs, err := client.GetDefinition(ctx, fileURI, lsp.Position{Line: 10, Character: 4})
 ```
 
-完整的包 API 参见 [docs/architecture/architecture.md](./docs/architecture/architecture.md)。
+完整的包 API 参见 [docs/architecture/architecture.md](../../docs/architecture/architecture.md)。
 
 ## 许可证
 

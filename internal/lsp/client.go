@@ -25,6 +25,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -73,6 +74,12 @@ var requestTimeouts = map[string]time.Duration{
 	"textDocument/documentHighlight":    10 * time.Second,
 	"textDocument/semanticTokens/range": 30 * time.Second,
 	"textDocument/semanticTokens/full":  30 * time.Second,
+	// Pull diagnostics get a deliberately short timeout: at least one server's
+	// textDocument/diagnostic implementation currently hangs and can wedge the
+	// server process itself (davalillo/mql-language-server#91), so the client
+	// bounds the blast radius and treats a timeout as "no pull results". The
+	// caller must never retry in a loop. (issue #43)
+	"textDocument/diagnostic": 10 * time.Second,
 }
 
 const defaultTimeout = 30 * time.Second
@@ -99,6 +106,29 @@ type jsonrpcMsg struct {
 type jsonrpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+}
+
+// RPCError is a JSON-RPC error response returned by the server for an
+// outstanding request. The Error() text is unchanged from the historical
+// format, but the typed code lets callers distinguish specific server
+// answers (for example a missing method) from transport failures.
+type RPCError struct {
+	Code    int
+	Message string
+}
+
+func (e *RPCError) Error() string {
+	return fmt.Sprintf("lsp error %d: %s", e.Code, e.Message)
+}
+
+// IsMethodNotFound reports whether err is the server's JSON-RPC -32601
+// (method not found) response. A server may advertise a capability in
+// initialize or via client/registerCapability without implementing the
+// corresponding method; callers use this to fall back to an honest
+// "unsupported" answer instead of failing the tool call.
+func IsMethodNotFound(err error) bool {
+	var rpcErr *RPCError
+	return errors.As(err, &rpcErr) && rpcErr.Code == -32601
 }
 
 // pendingRequest holds the reply channel for an outgoing request.
@@ -132,11 +162,19 @@ type LSPClient struct {
 	frameReader *FrameReader
 	nextID      atomic.Int64
 
+	// procDone is closed by the current subprocess's exit monitor once that
+	// process has exited and the monitor has finished updating client state.
+	// It is the only way to wait for the process: the monitor is the sole
+	// caller of cmd.Wait (exec.Cmd.Wait must not be called concurrently).
+	// Guarded by c.mu; replaced on every start().
+	procDone chan struct{}
+
 	initialized bool
 
 	// exited is set to true by the process-exit monitor goroutine once the
 	// subprocess has exited. Guarded by c.mu. Distinguishes an exited client
 	// (stdin nulled because the process died) from one that was never started.
+	// Reset by start() so a restarted client does not inherit it.
 	exited bool
 
 	// daemon mode fields
@@ -201,13 +239,10 @@ type LSPClient struct {
 	// of file changes automatically, keeping the LSP index fresh.
 	watcherMu     sync.Mutex // guards watcherStop, fileChangeCbs (C2: prevents data race)
 	watcherStop   chan struct{}
-	watcherDone   chan struct{} // closes when the current watcher goroutine exits
+	watcherDone   chan struct{}                   // closes when the current watcher goroutine exits
 	watcher       fileWatcher                     // C1: held so addWatcherRoot can add new roots
 	fileChangeCbs []func([]types.FileChangeEvent) // proactive notification callbacks
 
-	// exitDone closes when the exit monitor has reaped the process; Shutdown
-	// waits on it instead of calling cmd.Wait a second time. Guarded by mu.
-	exitDone chan struct{}
 	// shutdownHooks run once at the start of Shutdown (e.g. to stop the
 	// health poller so an intentional stop is not reported as a crash).
 	// Guarded by mu.
@@ -390,27 +425,34 @@ func (c *LSPClient) start() error {
 	logging.Log(logging.LevelInfo, fmt.Sprintf("LSP server started: %s (PID %d)", c.serverPath, cmd.Process.Pid))
 
 	fr := NewFrameReader(stdout)
-	exitDone := make(chan struct{})
+	done := make(chan struct{})
 	c.mu.Lock()
 	c.cmd = cmd
 	c.stdin = stdin
 	c.frameReader = fr
+	c.procDone = done
 	c.exited = false
-	c.exitDone = exitDone
 	c.mu.Unlock()
 
 	go c.drainStderr(stderr)
 	go c.readLoop(fr)
 
-	// Monitor process exit. This is the only cmd.Wait caller.
+	// Monitor process exit. This goroutine belongs to this process only: after
+	// a Restart the client fields describe a newer process, and touching them
+	// here cut the new server's stdin and rejected its pending initialize
+	// request ("lsp process exited"), which made restart_lsp_server flaky.
 	startTime := time.Now()
 	go func() {
-		defer close(exitDone)
+		// Close done last, after any state update, so Shutdown (and therefore
+		// Restart) cannot start a new process while this goroutine still runs.
+		defer close(done)
 		err := cmd.Wait()
 		uptime := time.Since(startTime).Round(time.Second)
+		exitErr := errors.New("lsp process exited")
+		if err != nil {
+			exitErr = fmt.Errorf("lsp process exited: %w", err)
+		}
 		c.mu.Lock()
-		// After Restart the client already runs a newer process; this one's
-		// exit must not reset that process's state or reject its requests.
 		current := c.cmd == cmd
 		if current {
 			c.initialized = false
@@ -423,7 +465,7 @@ func (c *LSPClient) start() error {
 		}
 		c.mu.Unlock()
 		if current {
-			c.rejectPending(fmt.Errorf("lsp process exited: %w", err))
+			c.rejectPending(exitErr)
 		}
 		if err != nil {
 			c.stderrMu.Lock()
@@ -465,6 +507,10 @@ func (c *LSPClient) readLoop(fr *FrameReader) {
 			logging.Log(logging.LevelError, fmt.Sprintf("readLoop panic: %v\n%s", r, debug.Stack()))
 		}
 	}()
+	// fr is this loop's own reader. Re-reading c.frameReader on each iteration
+	// let a previous process's loop switch to a restarted server's reader and
+	// consume its messages concurrently with the new loop (FrameReader is not
+	// safe for concurrent use), so responses went missing and requests timed out.
 	for {
 		raw, err := fr.ReadMessage()
 		if err != nil {
@@ -472,6 +518,12 @@ func (c *LSPClient) readLoop(fr *FrameReader) {
 				logging.Log(logging.LevelDebug, "LSP read loop ended: "+err.Error())
 			}
 			return
+		}
+		c.mu.Lock()
+		current := c.frameReader == fr
+		c.mu.Unlock()
+		if !current {
+			return // a restart replaced this connection; drop its late messages
 		}
 		c.dispatch(raw)
 	}
@@ -497,7 +549,7 @@ func (c *LSPClient) dispatch(raw []byte) {
 			c.pendingMu.Unlock()
 			if ok {
 				if msg.Error != nil {
-					req.err <- fmt.Errorf("lsp error %d: %s", msg.Error.Code, msg.Error.Message)
+					req.err <- &RPCError{Code: msg.Error.Code, Message: msg.Error.Message}
 				} else {
 					req.ch <- msg.Result
 				}
@@ -585,7 +637,8 @@ func (c *LSPClient) dispatch(raw []byte) {
 		// references, hover) lazily after workspace import completes.
 		var reg struct {
 			Registrations []struct {
-				Method string `json:"method"`
+				Method          string          `json:"method"`
+				RegisterOptions json.RawMessage `json:"registerOptions"`
 			} `json:"registrations"`
 		}
 		if err := json.Unmarshal(msg.Params, &reg); err == nil {
@@ -594,8 +647,18 @@ func (c *LSPClient) dispatch(raw []byte) {
 				// Map LSP method to capability key (e.g. "textDocument/documentSymbol" → "documentSymbolProvider")
 				capKey := methodToCapabilityKey(r.Method)
 				if capKey != "" {
-					c.capabilities[capKey] = true
-					logging.Log(logging.LevelDebug, fmt.Sprintf("dynamic capability registered: %s → %s", r.Method, capKey))
+					existing := c.capabilities[capKey]
+					c.capabilities[capKey] = mergeRegisteredCapability(existing, capKey, r.RegisterOptions)
+					// Log whether the registration merged options, kept an existing
+					// options object, or simply set the capability to true. (issue #37)
+					action := "set-true"
+					trimmed := strings.TrimSpace(string(r.RegisterOptions))
+					if trimmed != "" && trimmed != "null" {
+						action = "merged"
+					} else if _, ok := existing.(map[string]any); ok {
+						action = "kept"
+					}
+					logging.Log(logging.LevelDebug, fmt.Sprintf("dynamic capability registered: %s → %s (%s)", r.Method, capKey, action))
 				}
 			}
 			c.capsMu.Unlock()
@@ -1288,7 +1351,6 @@ func (c *LSPClient) shutdown(ctx context.Context) error {
 	if err != nil {
 		// Server dead, pipe broken or unresponsive: go straight to cleanup.
 		c.killProcess()
-		c.awaitExit(3 * time.Second)
 		return err
 	}
 	c.mu.Lock()
@@ -1297,35 +1359,37 @@ func (c *LSPClient) shutdown(ctx context.Context) error {
 		c.stdin = nil
 	}
 	cmd := c.cmd
-	exitDone := c.exitDone
+	done := c.procDone
 	c.mu.Unlock()
 
-	// Wait for the exit monitor to reap the process; force-kill if it lingers.
-	if cmd != nil && cmd.Process != nil && exitDone != nil {
+	// Wait for the process to exit, force-kill if it takes too long. Waiting on
+	// done (closed by the exit monitor) instead of calling cmd.Wait again avoids
+	// concurrent Wait calls, and it also waits for the monitor to finish, so a
+	// Restart never starts the next process while the old monitor still runs.
+	if cmd != nil && cmd.Process != nil && done != nil {
 		select {
-		case <-exitDone:
+		case <-done:
 			// Process exited cleanly.
 		case <-time.After(3 * time.Second):
 			logging.Log(logging.LevelWarning, fmt.Sprintf("LSP server %s (PID %d) did not exit after 3s, killing", c.serverPath, cmd.Process.Pid))
-			_ = cmd.Process.Kill()
-			c.awaitExit(3 * time.Second)
+			cmd.Process.Kill()
+			waitProcDone(done)
 		}
 	}
 	return nil
 }
 
-// awaitExit waits up to d for the exit monitor to reap the current process,
-// so a Restart that follows does not race the old process's teardown.
-func (c *LSPClient) awaitExit(d time.Duration) {
-	c.mu.Lock()
-	exitDone := c.exitDone
-	c.mu.Unlock()
-	if exitDone == nil {
+// waitProcDone waits a bounded time for an exit monitor to finish after the
+// process was killed. Kill only sends the signal; returning before the process
+// is reaped would let a Restart overlap the old process's exit handling.
+func waitProcDone(done chan struct{}) {
+	if done == nil {
 		return
 	}
 	select {
-	case <-exitDone:
-	case <-time.After(d):
+	case <-done:
+	case <-time.After(5 * time.Second):
+		logging.Log(logging.LevelWarning, "LSP server did not exit within 5s of being killed")
 	}
 }
 
@@ -1349,9 +1413,11 @@ func (c *LSPClient) killProcess() {
 		c.stdin = nil
 	}
 	cmd := c.cmd
+	done := c.procDone
 	c.mu.Unlock()
 	if cmd != nil && cmd.Process != nil {
 		cmd.Process.Kill()
+		waitProcDone(done)
 	}
 }
 
@@ -1499,13 +1565,31 @@ func (c *LSPClient) GetDiagnostics(uri string) []types.LSPDiagnostic {
 	return out
 }
 
-// HasDiagnostics reports whether the cache holds an entry for uri (possibly
-// an empty one), i.e. whether SubscribeToDiagnostics would replay it.
-func (c *LSPClient) HasDiagnostics(uri string) bool {
+// HasPublishedDiagnostics reports whether at least one
+// textDocument/publishDiagnostics notification has ever been received for uri.
+//
+// A cached empty diagnostics array still counts as delivered: that is the
+// live-channel-empty case (the server analyzed the document and found nothing).
+// A false result means no push was received for this document. That alone does
+// not prove the channel is dead: a successful textDocument/diagnostic pull can
+// still verify it (see pullDiagnosticsForDeadChannels). Callers must not present
+// absence of diagnostics as a clean bill of health when this returns false and
+// no pull answered. (issue #44)
+func (c *LSPClient) HasPublishedDiagnostics(uri string) bool {
 	c.diagMu.RLock()
 	defer c.diagMu.RUnlock()
 	_, ok := c.diags[NormalizeFileURI(uri)]
 	return ok
+}
+
+// ResetDiagnostics removes the cached diagnostics for uri. Use it before an
+// operation that should re-derive the document's diagnostics (for example
+// ReopenDocument after an edit), so a subsequent wait and read observe only
+// freshly published notifications instead of a stale cached publication.
+func (c *LSPClient) ResetDiagnostics(uri string) {
+	c.diagMu.Lock()
+	defer c.diagMu.Unlock()
+	delete(c.diags, NormalizeFileURI(uri))
 }
 
 // GetAllDiagnostics returns a copy of all diagnostics.
@@ -1519,6 +1603,74 @@ func (c *LSPClient) GetAllDiagnostics() map[string][]types.LSPDiagnostic {
 		out[uri] = cp
 	}
 	return out
+}
+
+// ErrPullDiagnosticsUnsupported is returned by PullDiagnostics when the server
+// did not declare the LSP 3.17 diagnosticProvider capability. Callers can test
+// for it with errors.Is to distinguish "this server has no pull model" from a
+// genuine request failure such as a timeout. (issue #43)
+var ErrPullDiagnosticsUnsupported = errors.New("server does not support pull diagnostics (diagnosticProvider)")
+
+// ErrPullDiagnosticsNoReport is returned by PullDiagnostics when the server
+// answered without a "full" report (null, "unchanged", or an unknown kind).
+// Such an answer carries no diagnostics for the current document, so it must
+// not be treated as a verified clean result.
+var ErrPullDiagnosticsNoReport = errors.New("pull diagnostics: server returned no full report")
+
+// documentDiagnosticReport is the subset of the LSP 3.17
+// DocumentDiagnosticReport that PullDiagnostics consumes: a "full" report
+// carries items, an "unchanged" report carries none.
+type documentDiagnosticReport struct {
+	Kind  string                `json:"kind"`
+	Items []types.LSPDiagnostic `json:"items"`
+}
+
+// PullDiagnostics issues a single LSP 3.17 textDocument/diagnostic request for
+// uri and returns the reported diagnostics. It is the pull-model counterpart to
+// the textDocument/publishDiagnostics push channel: pull-model servers (for
+// example OmniSharp/C# servers and mql-lsp-server) never push, so this is the
+// only way to obtain their diagnostics.
+//
+// The method issues at most one request and never retries. At least one known
+// server's pull implementation currently hangs and wedges the server itself
+// (davalillo/mql-language-server#91), so a timeout is treated as "no pull
+// results": the caller must not retry in a loop. The request is bounded by the
+// "textDocument/diagnostic" entry in requestTimeouts (10s) as well as ctx.
+//
+// When the server did not declare diagnosticProvider it returns
+// ErrPullDiagnosticsUnsupported without sending a request. Only a "full" report
+// verifies the document: a null result, an "unchanged" report (never valid here,
+// since no previousResultId is sent), or an unrecognized kind returns
+// ErrPullDiagnosticsNoReport, so callers report the document as unverified
+// instead of clean. (issue #43)
+func (c *LSPClient) PullDiagnostics(ctx context.Context, uri string) ([]types.LSPDiagnostic, error) {
+	if !c.hasCapability("diagnosticProvider") {
+		return nil, ErrPullDiagnosticsUnsupported
+	}
+	result, err := c.sendRequest(ctx, "textDocument/diagnostic", map[string]any{
+		"textDocument": map[string]any{"uri": NormalizeFileURI(uri)},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result == nil || string(result) == "null" {
+		return nil, fmt.Errorf("%w (null result)", ErrPullDiagnosticsNoReport)
+	}
+	var report documentDiagnosticReport
+	if err := json.Unmarshal(result, &report); err != nil {
+		return nil, err
+	}
+	if report.Kind != "full" {
+		// Returning an empty list here would read as "verified clean" to the
+		// caller while nothing was verified.
+		return nil, fmt.Errorf("%w (kind %q)", ErrPullDiagnosticsNoReport, report.Kind)
+	}
+	if report.Items == nil {
+		return []types.LSPDiagnostic{}, nil
+	}
+	out := make([]types.LSPDiagnostic, len(report.Items))
+	copy(out, report.Items)
+	return out, nil
 }
 
 // SubscribeToDiagnostics registers cb to be called on every publishDiagnostics notification.
@@ -2540,6 +2692,7 @@ var lspMethodToCapability = map[string]string{
 	"textDocument/codeLens":          "codeLensProvider",
 	"textDocument/documentHighlight": "documentHighlightProvider",
 	"textDocument/declaration":       "declarationProvider",
+	"textDocument/diagnostic":        "diagnosticProvider",
 	"textDocument/semanticTokens":    "semanticTokensProvider",
 	"textDocument/inlayHint":         "inlayHintProvider",
 	"callHierarchy/incomingCalls":    "callHierarchyProvider",
@@ -2553,6 +2706,43 @@ func methodToCapabilityKey(method string) string {
 	return lspMethodToCapability[method]
 }
 
+// mergeRegisteredCapability merges one dynamic registration into the stored
+// capability map without destroying options objects. (issue #37)
+// Semantics:
+//   - registerOptions present (non-empty, non-null): parse to map[string]any,
+//     merge over the existing value (existing options map is the base; new keys
+//     win; an existing bool true is treated as an empty base map), store the map.
+//   - no registerOptions: if the existing value is a map[string]any, KEEP it
+//     unchanged; otherwise set true.
+//
+// Returns the new value for the key.
+func mergeRegisteredCapability(existing any, capKey string, opts json.RawMessage) any {
+	trimmed := strings.TrimSpace(string(opts))
+	if trimmed != "" && trimmed != "null" {
+		var incoming map[string]any
+		if err := json.Unmarshal(opts, &incoming); err == nil {
+			merged := map[string]any{}
+			if base, ok := existing.(map[string]any); ok {
+				for k, v := range base {
+					merged[k] = v
+				}
+			}
+			// An existing bool true is an empty base map: there are no options to
+			// carry over, so the incoming options become the whole value.
+			for k, v := range incoming {
+				merged[k] = v
+			}
+			return merged
+		}
+	}
+	// No usable registerOptions: preserve an existing options object rather than
+	// clobbering it with bool true (the original issue #37 bug).
+	if m, ok := existing.(map[string]any); ok {
+		return m
+	}
+	return true
+}
+
 func (c *LSPClient) hasCapability(key string) bool {
 	c.capsMu.RLock()
 	defer c.capsMu.RUnlock()
@@ -2564,6 +2754,17 @@ func (c *LSPClient) hasCapability(key string) bool {
 		return b
 	}
 	return v != nil
+}
+
+// SupportsPullDiagnostics reports whether the server declared the LSP 3.17
+// pull-diagnostics capability (diagnosticProvider), either statically in its
+// initialize result or through a dynamic client/registerCapability
+// notification. Servers in the pull model (for example OmniSharp/C# servers
+// and mql-lsp-server) never send textDocument/publishDiagnostics, so this
+// capability is the signal that textDocument/diagnostic can be used instead.
+// (issue #43)
+func (c *LSPClient) SupportsPullDiagnostics() bool {
+	return c.hasCapability("diagnosticProvider")
 }
 
 func (c *LSPClient) getCapabilityRaw(key string) any {

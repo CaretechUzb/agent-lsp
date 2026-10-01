@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/blackwell-systems/agent-lsp/internal/config"
+	"github.com/blackwell-systems/agent-lsp/skills"
 )
 
 func TestBuildLspArgs(t *testing.T) {
@@ -151,5 +152,199 @@ func TestResolveTargetPath_Custom(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "foo/bar.json") {
 		t.Errorf("expected path to end with foo/bar.json, got %q", got)
+	}
+}
+
+func TestResolveTargetPath_Pi(t *testing.T) {
+	project, err := resolveTargetPath(9, "")
+	if err != nil {
+		t.Fatalf("resolveTargetPath(9, \"\") error: %v", err)
+	}
+	if !strings.HasSuffix(project, filepath.Join(".mcp.json")) {
+		t.Errorf("Pi project target: got %q, want suffix .mcp.json", project)
+	}
+
+	global, err := resolveTargetPath(10, "")
+	if err != nil {
+		t.Fatalf("resolveTargetPath(10, \"\") error: %v", err)
+	}
+	want := filepath.Join(".config", "mcp", "mcp.json")
+	if !strings.HasSuffix(global, want) {
+		t.Errorf("Pi global target: got %q, want suffix %q", global, want)
+	}
+}
+
+func TestResolveRulesPath_Pi(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd error: %v", err)
+	}
+
+	project := resolveRulesPath(9)
+	if want := filepath.Join(cwd, "AGENTS.md"); project != want {
+		t.Errorf("Pi project rules: got %q, want %q", project, want)
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir error: %v", err)
+	}
+	global := resolveRulesPath(10)
+	if want := filepath.Join(homeDir, ".pi", "agent", "AGENTS.md"); global != want {
+		t.Errorf("Pi global rules: got %q, want %q", global, want)
+	}
+}
+
+func TestWriteManagedSection_PiRulesSentinels(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENTS.md")
+	if err := os.WriteFile(path, []byte("# Project\n"), 0o644); err != nil {
+		t.Fatalf("could not seed AGENTS.md: %v", err)
+	}
+
+	if err := writeManagedSection(path, "managed-body"); err != nil {
+		t.Fatalf("writeManagedSection error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("could not read AGENTS.md: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, managedSectionStart) || !strings.Contains(text, managedSectionEnd) {
+		t.Error("managed section sentinels not found after write")
+	}
+	if !strings.Contains(text, "managed-body") {
+		t.Error("managed content not found after write")
+	}
+	if !strings.Contains(text, "# Project") {
+		t.Error("existing content was lost")
+	}
+
+	// Second write replaces the section instead of appending a duplicate.
+	if err := writeManagedSection(path, "managed-body-2"); err != nil {
+		t.Fatalf("second writeManagedSection error: %v", err)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("could not re-read AGENTS.md: %v", err)
+	}
+	text = string(data)
+	if strings.Count(text, managedSectionStart) != 1 {
+		t.Errorf("expected exactly one managed section, found %d", strings.Count(text, managedSectionStart))
+	}
+	if !strings.Contains(text, "managed-body-2") || strings.Contains(text, "managed-body\n") {
+		t.Error("managed section was not replaced on second write")
+	}
+}
+
+func TestGenerateRulesContent_ProviderSkillHint(t *testing.T) {
+	generic := generateRulesContent()
+	if !strings.Contains(generic, "prompts/get") {
+		t.Error("generic rules should mention prompts/get")
+	}
+	if strings.Contains(generic, "/mcp__agent-lsp__") {
+		t.Error("generic rules should not mention Pi slash commands")
+	}
+
+	claude := generateRulesContent(rulesTargetClaudeCode)
+	if !strings.Contains(claude, "prompts/get") {
+		t.Error("Claude Code rules should mention prompts/get")
+	}
+
+	pi := generateRulesContent(rulesTargetPi)
+	if !strings.Contains(pi, "/mcp__agent-lsp__") {
+		t.Error("Pi rules should mention /mcp__agent-lsp__ slash commands")
+	}
+	if strings.Contains(pi, "prompts/get") {
+		t.Error("Pi rules should not reference raw prompts/get")
+	}
+	if !strings.Contains(pi, "activate_skill") {
+		t.Error("Pi rules should mention the activate_skill tool")
+	}
+}
+
+func TestRulesTarget(t *testing.T) {
+	if got := selectRulesTarget(true, false); got != rulesTargetClaudeCode {
+		t.Errorf("rulesTarget(true,false) = %v, want rulesTargetClaudeCode", got)
+	}
+	if got := selectRulesTarget(false, true); got != rulesTargetPi {
+		t.Errorf("rulesTarget(false,true) = %v, want rulesTargetPi", got)
+	}
+	if got := selectRulesTarget(false, false); got != rulesTargetGeneric {
+		t.Errorf("rulesTarget(false,false) = %v, want rulesTargetGeneric", got)
+	}
+	if isPiChoice(9) != true || isPiChoice(10) != true || isPiChoice(1) != false {
+		t.Error("isPiChoice returned unexpected results")
+	}
+}
+
+func TestResolveSkillsDest(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd error: %v", err)
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir error: %v", err)
+	}
+
+	tests := []struct {
+		choice int
+		want   string
+	}{
+		{1, filepath.Join(homeDir, ".claude", "skills")},
+		{2, filepath.Join(homeDir, ".claude", "skills")},
+		{4, filepath.Join(homeDir, ".cursor", "skills")},
+		{7, filepath.Join(homeDir, ".config", "gemini-cli", "skills")},
+		{9, filepath.Join(cwd, ".agents", "skills")},
+		{10, filepath.Join(homeDir, ".pi", "agent", "skills")},
+		{3, ""},
+		{5, ""},
+		{6, ""},
+		{8, ""},
+	}
+	for _, tc := range tests {
+		if got := resolveSkillsDest(tc.choice); got != tc.want {
+			t.Errorf("resolveSkillsDest(%d) = %q, want %q", tc.choice, got, tc.want)
+		}
+	}
+}
+
+func TestSkillsInstall_WritesCompleteTrees(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "skills")
+
+	n, err := skills.Install(dest)
+	if err != nil {
+		t.Fatalf("skills.Install error: %v", err)
+	}
+	if n != 24 {
+		t.Errorf("expected 24 skills installed, got %d", n)
+	}
+
+	// SKILL.md present at the skill root.
+	skillMD := filepath.Join(dest, "lsp-docs", "SKILL.md")
+	data, err := os.ReadFile(skillMD)
+	if err != nil {
+		t.Fatalf("expected %s to exist: %v", skillMD, err)
+	}
+	if !strings.Contains(string(data), "description:") {
+		t.Error("SKILL.md frontmatter missing")
+	}
+
+	// Supporting references files are embedded and written too.
+	ref := filepath.Join(dest, "lsp-explore", "references", "patterns.md")
+	if _, err := os.Stat(ref); err != nil {
+		t.Errorf("expected supporting file %s to exist: %v", ref, err)
+	}
+
+	// Re-run overwrites in place and keeps the same count.
+	n2, err := skills.Install(dest)
+	if err != nil {
+		t.Fatalf("second skills.Install error: %v", err)
+	}
+	if n2 != 24 {
+		t.Errorf("expected 24 skills on re-install, got %d", n2)
 	}
 }

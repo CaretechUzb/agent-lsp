@@ -60,7 +60,7 @@ func WaitForDiagnostics(ctx context.Context, client *LSPClient, uris []string, t
 	pendingReplay := make(map[string]bool, len(uris))
 	cached := make(map[string]bool, len(uris))
 	for _, uri := range uris {
-		if client.HasDiagnostics(uri) {
+		if client.HasPublishedDiagnostics(uri) {
 			pendingReplay[uri] = true
 			cached[uri] = true
 		}

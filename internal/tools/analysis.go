@@ -8,6 +8,13 @@
 // state rather than stale LSP cache. It waits up to 25 seconds for
 // diagnostics to settle (cross-package analysis in Go can be slow).
 //
+// Push is tried first: any document that delivered a
+// textDocument/publishDiagnostics notification is used as-is. For a document
+// whose push channel is dead, get_diagnostics issues one LSP 3.17
+// textDocument/diagnostic request when the server declared diagnosticProvider
+// (a bounded, non-retrying pull), so pull-model servers that never push can
+// still report diagnostics. (issue #43)
+//
 // suggest_fixes filters the returned actions to a concise summary:
 // title, kind, and whether a command or workspace edit is attached.
 // Full workspace edits are not inlined to keep responses compact.
@@ -16,9 +23,13 @@ package tools
 import (
 	"context"
 	"fmt"
+	"os"
+	"sort"
 	"strings"
+	"time"
 
-	gcf "github.com/blackwell-systems/agent-lsp/internal/encoding/gcf"
+	"github.com/blackwell-systems/agent-lsp/internal/encoding/gcf"
+	"github.com/blackwell-systems/agent-lsp/internal/logging"
 	"github.com/blackwell-systems/agent-lsp/internal/lsp"
 	"github.com/blackwell-systems/agent-lsp/internal/types"
 	gcfgo "github.com/blackwell-systems/gcf-go"
@@ -33,6 +44,9 @@ func HandleGetDiagnostics(ctx context.Context, client *lsp.LSPClient, args map[s
 	filePath, _ := args["file_path"].(string)
 
 	var diagMap map[string][]types.LSPDiagnostic
+	// queriedURIs is the set of documents whose diagnostics channel we must
+	// classify (live vs dead) to decide whether an empty result is trustworthy.
+	var queriedURIs []string
 
 	if filePath != "" {
 		cleanPath, err := ValidateFilePath(filePath, client.RootDir())
@@ -48,6 +62,7 @@ func HandleGetDiagnostics(ctx context.Context, client *lsp.LSPClient, args map[s
 		}
 		diags := client.GetDiagnostics(fileURI)
 		diagMap = map[string][]types.LSPDiagnostic{fileURI: diags}
+		queriedURIs = []string{fileURI}
 	} else {
 		if err := client.ReopenAllDocuments(ctx); err != nil {
 			return types.ErrorResult(fmt.Sprintf("failed to reopen documents: %s", err)), nil
@@ -68,22 +83,18 @@ func HandleGetDiagnostics(ctx context.Context, client *lsp.LSPClient, args map[s
 				diagMap[uri] = diags
 			}
 		}
+		// A document that never received a publish is absent from GetOpenDocuments'
+		// diagnostics entirely, so the queried set must be the open documents, not
+		// the (possibly smaller) key set of diagMap.
+		queriedURIs = openURIs
 	}
 
-	// group_by=symbol: group diagnostics under their owning symbol.
-	groupBy, _ := args["group_by"].(string)
-	if groupBy == "symbol" && filePath != "" {
-		result, gErr := groupDiagnosticsBySymbol(ctx, client, filePath, diagMap)
-		if gErr == nil {
-			hint := "No errors. Safe to proceed."
-			if len(result.Symbols) > 0 || len(result.Ungrouped) > 0 {
-				hint = "Use suggest_fixes at each error location for quick fixes."
-			}
-			encoded, _ := EncodeResult(ctx, result)
-			return appendHint(encoded, hint), nil
-		}
-		// Fall through to ungrouped if symbol grouping fails.
-	}
+	// Push-first: a document that already received a publishDiagnostics
+	// notification is never pulled. For a document whose push channel is dead,
+	// issue one textDocument/diagnostic request when the server declared
+	// diagnosticProvider, and merge the result into diagMap. (issue #43)
+	hasProvider := client.SupportsPullDiagnostics()
+	pulledLive, pullAttemptedURIs := pullDiagnosticsForDeadChannels(ctx, client, diagMap, queriedURIs, hasProvider)
 
 	hasErrors := false
 	for _, diags := range diagMap {
@@ -92,12 +103,206 @@ func HandleGetDiagnostics(ctx context.Context, client *lsp.LSPClient, args map[s
 			break
 		}
 	}
-	hint := "No errors. Safe to proceed."
-	if hasErrors {
-		hint = "Use suggest_fixes at each error location for quick fixes."
+
+	deadURIs, liveCount := classifyDiagnosticsChannel(client, queriedURIs, pulledLive)
+	// Split the dead URIs by whether a pull was actually attempted for them:
+	// only attempted-and-unanswered documents may be reported as "pull did not
+	// respond". Documents skipped because the budget ran out (or because the
+	// fallback is disabled) keep the generic wording, which claims no pull was
+	// tried.
+	attemptedSet := make(map[string]bool, len(pullAttemptedURIs))
+	for _, uri := range pullAttemptedURIs {
+		attemptedSet[uri] = true
 	}
+	var pullDead, pullSkipped []string
+	for _, uri := range deadURIs {
+		if attemptedSet[uri] {
+			pullDead = append(pullDead, uri)
+		} else {
+			pullSkipped = append(pullSkipped, uri)
+		}
+	}
+
+	// group_by=symbol: group diagnostics under their owning symbol.
+	groupBy, _ := args["group_by"].(string)
+	if groupBy == "symbol" && filePath != "" {
+		result, gErr := groupDiagnosticsBySymbol(ctx, client, filePath, diagMap)
+		if gErr == nil {
+			encoded, _ := EncodeResult(ctx, result)
+			return appendHint(encoded, diagnosticsHint(hasErrors, deadURIs, liveCount, pullDead, pullSkipped)), nil
+		}
+		// Fall through to ungrouped if symbol grouping fails.
+	}
+
 	encoded, _ := EncodeResult(ctx, diagMap)
-	return appendHint(encoded, hint), nil
+	return appendHint(encoded, diagnosticsHint(hasErrors, deadURIs, liveCount, pullDead, pullSkipped)), nil
+}
+
+// diagnosticsHint builds the next-step hint for a get_diagnostics result.
+//
+// An empty result is ambiguous: the server may have analyzed the document and
+// found nothing (a live, empty publish channel), it may have answered a pull
+// request successfully (also verified), or its diagnostics channel may be dead
+// (no push ever, and no successful pull). The hint must not claim the file is
+// clean in the last case. deadURIs lists queried documents that are not
+// verified by either a textDocument/publishDiagnostics notification or a
+// successful pull; liveCount is how many queried documents are verified (a
+// published empty array counts as live). pullDead lists the dead URIs for which
+// a pull was attempted but did not respond; pullSkipped lists dead URIs that
+// were never attempted (pull disabled, no provider, or the aggregate budget
+// ran out), so the wording never claims a pull was tried for them.
+// (issues #43, #44)
+func diagnosticsHint(hasErrors bool, deadURIs []string, liveCount int, pullDead, pullSkipped []string) string {
+	const (
+		fixesHint = "Use suggest_fixes at each error location for quick fixes."
+		safeHint  = "No errors. Safe to proceed."
+	)
+	if hasErrors {
+		if len(deadURIs) == 0 {
+			return fixesHint
+		}
+		// Errors elsewhere do not confirm the dead documents: report them too,
+		// so an all-documents query with errors in one file still surfaces the
+		// unverified ones.
+		sorted := append([]string(nil), deadURIs...)
+		sort.Strings(sorted)
+		return fixesHint + " No diagnostics received for: " + strings.Join(sorted, ", ") + " — those files are not confirmed clean."
+	}
+	if len(deadURIs) == 0 {
+		// Every queried document is verified by a push or a successful pull
+		// (or nothing was queried).
+		return safeHint
+	}
+	sorted := append([]string(nil), deadURIs...)
+	sort.Strings(sorted)
+	sort.Strings(pullDead)
+	sort.Strings(pullSkipped)
+	joined := strings.Join(sorted, ", ")
+	pullDeadList := strings.Join(pullDead, ", ")
+	pullSkippedList := strings.Join(pullSkipped, ", ")
+	if liveCount == 0 {
+		switch {
+		case len(pullDead) == 0:
+			// No pull was ever attempted for the dead documents (fallback
+			// disabled, no provider, or budget exhausted before any pull).
+			return "No diagnostics received — the server has not published any for this document; this does not confirm the file is clean."
+		case len(pullSkipped) == 0:
+			return "No diagnostics received — the server publishes none and its pull diagnostics did not respond; this does not confirm the file is clean."
+		default:
+			return fmt.Sprintf("No diagnostics received — pull did not respond for %s; no pull was attempted for %s (pull time budget); this does not confirm the file is clean.", pullDeadList, pullSkippedList)
+		}
+	}
+	switch {
+	case len(pullDead) == 0:
+		return safeHint + " No diagnostics received for: " + joined + " — those files are not confirmed clean."
+	case len(pullSkipped) == 0:
+		return safeHint + " No diagnostics received for: " + joined + " — the server publishes none and its pull diagnostics did not respond; those files are not confirmed clean."
+	default:
+		return safeHint + " No diagnostics received for: " + joined + " — pull did not respond for " + pullDeadList + "; no pull was attempted for " + pullSkippedList + " (pull time budget); those files are not confirmed clean."
+	}
+}
+
+// classifyDiagnosticsChannel splits queried URIs into those that are not
+// verified by any diagnostics channel (dead) and a count of those that are
+// (live). A URI is verified when it received a publishDiagnostics notification
+// (including a published empty array) or when a pull request answered
+// successfully (pullLive). A dead channel makes an empty result unverifiable.
+// (issues #43, #44)
+func classifyDiagnosticsChannel(client *lsp.LSPClient, uris []string, pullLive map[string]bool) (deadURIs []string, liveCount int) {
+	for _, uri := range uris {
+		if client.HasPublishedDiagnostics(uri) || pullLive[uri] {
+			liveCount++
+		} else {
+			deadURIs = append(deadURIs, uri)
+		}
+	}
+	return deadURIs, liveCount
+}
+
+// pullDiagnosticsEnabled reports whether the pull fallback is enabled. The
+// default is ENABLED: the one server whose pull method hung and wedged the
+// process (observed with mql-lsp-server v2.4.2, upstream
+// davalillo/mql-language-server#91) fixed it in v2.5.0 — verified end-to-end
+// (textDocument/diagnostic answers, the server survives subsequent requests,
+// and the MQL Tier-2 harness passes with the fallback on) — and the CI pin now
+// references that release. It can be forced off via
+// AGENT_LSP_PULL_DIAGNOSTICS=0 (0/false/no/off) for servers whose pull
+// implementation is still broken. (issue #43)
+var pullDiagnosticsEnabled = func() bool {
+	switch strings.ToLower(os.Getenv("AGENT_LSP_PULL_DIAGNOSTICS")) {
+	case "0", "false", "no", "off":
+		return false
+	}
+	return true
+}
+
+// shouldAttemptPull reports whether get_diagnostics should issue a
+// textDocument/diagnostic request for one document. Pull is attempted only
+// when the pull fallback is enabled, the server declared diagnosticProvider,
+// and the push channel for that document is dead: push-first means a document
+// that already received a publishDiagnostics notification is never pulled.
+// (issue #43)
+func shouldAttemptPull(hasProvider, pushLive bool) bool {
+	return hasProvider && !pushLive && pullDiagnosticsEnabled()
+}
+
+// pullDiagnosticsForDeadChannels attempts a single textDocument/diagnostic
+// request for each queried document whose push channel is dead, when the server
+// declares diagnosticProvider. A successful pull replaces the (empty or absent)
+// cached push entry in diagMap and is recorded in the returned set of
+// pull-verified URIs. A pull that errors or times out leaves the channel dead;
+// it is never retried and never run for a document that already received a
+// push. (issue #43)
+//
+// pullBudget bounds the aggregate time spent pulling across documents: once
+// exceeded, remaining dead documents are skipped for this query (left dead;
+// the next query can pull them). Without it, an all-documents query against a
+// server whose pull method hangs (davalillo/mql-language-server#91) with N
+// open dead documents would block for N x 10s. (issue #43)
+const pullTimeBudget = 15 * time.Second
+
+func pullDiagnosticsForDeadChannels(ctx context.Context, client *lsp.LSPClient, diagMap map[string][]types.LSPDiagnostic, queriedURIs []string, hasProvider bool) (pulledLive map[string]bool, attemptedURIs []string) {
+	pulledLive = make(map[string]bool)
+	if !hasProvider {
+		return pulledLive, nil
+	}
+	// Bound every pull by the remaining aggregate budget, not only by a
+	// pre-check: a pull issued at 14.9s would otherwise still run for its full
+	// 10s request timeout, overshooting the budget.
+	budgetCtx, cancel := context.WithTimeout(ctx, pullTimeBudget)
+	defer cancel()
+	for _, uri := range queriedURIs {
+		if !shouldAttemptPull(hasProvider, client.HasPublishedDiagnostics(uri)) {
+			continue
+		}
+		if budgetCtx.Err() != nil {
+			logging.Log(logging.LevelInfo, fmt.Sprintf("pull diagnostics: aggregate budget %s exhausted; skipping remaining dead documents", pullTimeBudget))
+			break
+		}
+		attemptedURIs = append(attemptedURIs, uri)
+		pulled, err := client.PullDiagnostics(budgetCtx, uri)
+		if err != nil {
+			// Timeout, protocol error, or no full report: the pull verified
+			// nothing, and the caller never retries. But a publish may have
+			// arrived while the pull was pending; the classifier then treats
+			// the channel as live, so the result must carry those pushed
+			// diagnostics rather than the empty entry collected before.
+			if client.HasPublishedDiagnostics(uri) {
+				diagMap[uri] = client.GetDiagnostics(uri)
+			}
+			continue
+		}
+		if client.HasPublishedDiagnostics(uri) {
+			// A publish arrived while the pull was pending; the push is
+			// authoritative for this document, so use it and do not count the
+			// channel as pull-verified.
+			diagMap[uri] = client.GetDiagnostics(uri)
+			continue
+		}
+		diagMap[uri] = pulled
+		pulledLive[uri] = true
+	}
+	return pulledLive, attemptedURIs
 }
 
 // symbolDiagGroup groups diagnostics under a named symbol.

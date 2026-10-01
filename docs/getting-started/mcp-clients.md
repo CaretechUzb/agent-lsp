@@ -52,6 +52,30 @@ Add to your Windsurf MCP configuration:
 }
 ```
 
+## Pi
+
+Pi has no built-in MCP support; install the adapter package once:
+
+```bash
+pi install npm:pi-mcp-adapter
+```
+
+The adapter reads the shared standard MCP files. For a single project, `agent-lsp init` (choice 9) writes `.mcp.json` in the project root — the same file Claude Code uses:
+
+```json
+{
+  "mcpServers": {
+    "agent-lsp": {
+      "type": "stdio",
+      "command": "agent-lsp",
+      "args": ["go:gopls"]
+    }
+  }
+}
+```
+
+For all projects, `agent-lsp init` (choice 10) writes the same entry to `~/.config/mcp/mcp.json`. Skill awareness rules are written to `AGENTS.md` (project) or `~/.pi/agent/AGENTS.md` (global). Restart Pi (or run `/reload`) afterwards.
+
 ## Continue.dev
 
 Add to `.continue/config.yaml`:
