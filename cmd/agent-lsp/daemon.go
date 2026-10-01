@@ -63,7 +63,11 @@ func runDaemonStatus(args []string) {
 			status = "ready"
 		}
 		uptime := time.Since(d.StartTime).Round(time.Second)
-		fmt.Printf("  %s (%s) — PID %d, %s, uptime %s\n", d.LanguageID, d.RootDir, d.PID, status, uptime)
+		session := ""
+		if d.SessionPID > 0 {
+			session = fmt.Sprintf(", session %d", d.SessionPID)
+		}
+		fmt.Printf("  %s (%s) — PID %d, %s, uptime %s%s\n", d.LanguageID, d.RootDir, d.PID, status, uptime, session)
 	}
 }
 
@@ -86,7 +90,7 @@ func runDaemonStop(args []string) {
 	if stopAll {
 		daemons := lsp.ListDaemons()
 		for _, d := range daemons {
-			if err := lsp.StopDaemon(d.RootDir, d.LanguageID); err != nil {
+			if err := lsp.StopListedDaemon(d); err != nil {
 				fmt.Fprintf(os.Stderr, "  failed to stop %s (%s): %v\n", d.LanguageID, d.RootDir, err)
 			} else {
 				fmt.Printf("  stopped %s (%s)\n", d.LanguageID, d.RootDir)
