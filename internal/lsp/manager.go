@@ -146,6 +146,17 @@ func (m *ServerManager) StartAll(ctx context.Context, rootDir string) error {
 			}
 			continue
 		}
+		// Session mode: share one daemon-owned server across the session's
+		// agent-lsp processes instead of starting a private one.
+		if lang := strings.ToLower(e.languageID); SessionPID() > 0 && NeedsDaemon(lang) {
+			client, err := m.startOrConnectDaemon(ctx, rootDir, lang, e.command)
+			if err != nil {
+				rollback()
+				return fmt.Errorf("connect %s daemon: %w", lang, err)
+			}
+			fresh = append(fresh, swap{e: e, client: client})
+			continue
+		}
 		client := NewLSPClient(e.command[0], e.command[1:])
 		logging.Log(logging.LevelDebug, fmt.Sprintf("ServerManager.StartAll: starting %s", e.command[0]))
 		if err := client.Initialize(ctx, rootDir); err != nil {
@@ -296,6 +307,15 @@ func (m *ServerManager) StartForLanguage(ctx context.Context, rootDir, languageI
 func (m *ServerManager) startOrConnectDaemon(ctx context.Context, rootDir, languageID string, command []string) (*LSPClient, error) {
 	// Remove state for daemons whose processes died without cleanup.
 	CleanupStaleDaemons()
+
+	// Serialize find-or-spawn across processes: a broker publishes daemon.json
+	// only after its server initialized, so without the lock every agent-lsp
+	// starting in that window would spawn a broker of its own.
+	unlock, err := lockDaemonSpawn(DaemonDir(rootDir, languageID))
+	if err != nil {
+		return nil, fmt.Errorf("daemon: spawn lock: %w", err)
+	}
+	defer unlock()
 
 	// Check for existing running daemon.
 	info, err := FindRunningDaemon(rootDir, languageID)

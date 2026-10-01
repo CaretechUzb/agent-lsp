@@ -84,6 +84,7 @@ func RunBroker(cfg BrokerConfig) error {
 		Ready:        false,
 		StartTime:    time.Now(),
 		LastActivity: time.Now(),
+		SessionPID:   SessionPID(),
 	}
 	var infoMu sync.Mutex // protects writes to info fields
 
@@ -177,6 +178,13 @@ func RunBroker(cfg BrokerConfig) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
+	// Closes once the language server process is reaped. Without it a broker
+	// whose server crashed (or was killed) stays registered and answers every
+	// request with an error until the inactivity timeout.
+	client.mu.Lock()
+	serverExited := client.exitDone
+	client.mu.Unlock()
+
 	// Inactivity timer.
 	inactivityTicker := time.NewTicker(30 * time.Second)
 	defer inactivityTicker.Stop()
@@ -230,6 +238,31 @@ func RunBroker(cfg BrokerConfig) error {
 				cleanup(dir)
 				return nil
 			}
+			// A session-scoped daemon dies with its session: nothing can
+			// reconnect to its DaemonDir once that PID is gone.
+			if info.SessionPID > 0 && !processAlive(info.SessionPID) {
+				logging.Log(logging.LevelDebug, fmt.Sprintf("daemon: session PID %d exited, shutting down", info.SessionPID))
+				_ = client.Shutdown(ctx)
+				connMu.Lock()
+				for c := range connections {
+					c.Close()
+				}
+				connMu.Unlock()
+				cleanup(dir)
+				_ = os.Remove(dir + ".lock")
+				return nil
+			}
+
+		case <-serverExited:
+			logging.Log(logging.LevelWarning, "daemon: language server exited, shutting down")
+			_ = client.Shutdown(ctx)
+			connMu.Lock()
+			for c := range connections {
+				c.Close()
+			}
+			connMu.Unlock()
+			cleanup(dir)
+			return fmt.Errorf("daemon: language server exited")
 
 		case sig := <-sigCh:
 			logging.Log(logging.LevelDebug, fmt.Sprintf("daemon: received %s, shutting down", sig))
@@ -273,41 +306,49 @@ func handleBrokerConnection(ctx context.Context, bc *brokerConn, client *LSPClie
 
 		if envelope.ID != nil {
 			// It's a request: forward to LSP server and send response back.
+			// Answered off the read loop so one slow request (a cold
+			// references) does not stall the connection's other calls.
 			var params any
 			if envelope.Params != nil {
 				_ = json.Unmarshal(envelope.Params, &params)
 			}
-			logging.Log(logging.LevelDebug, fmt.Sprintf("broker: forwarding request %s (id=%s)", envelope.Method, string(envelope.ID)))
-			result, err := client.sendRequest(ctx, envelope.Method, params)
-			var response []byte
-			if err != nil {
-				logging.Log(logging.LevelDebug, fmt.Sprintf("broker: request %s error: %v", envelope.Method, err))
-				response, _ = json.Marshal(map[string]any{
-					"jsonrpc": "2.0",
-					"id":      envelope.ID,
-					"error":   map[string]any{"code": -32603, "message": err.Error()},
-				})
-			} else {
-				resultLen := 0
-				if result != nil {
-					resultLen = len(result)
-				}
-				logging.Log(logging.LevelDebug, fmt.Sprintf("broker: request %s success (result %d bytes)", envelope.Method, resultLen))
-				response, _ = json.Marshal(map[string]any{
-					"jsonrpc": "2.0",
-					"id":      envelope.ID,
-					"result":  result,
-				})
-			}
-			if err := bc.write(response); err != nil {
-				logging.Log(logging.LevelDebug, fmt.Sprintf("broker: failed to write response: %v", err))
-				return
-			}
+			go forwardBrokerRequest(ctx, bc, client, envelope.ID, envelope.Method, params)
 		} else {
 			// It's a notification: forward to LSP server.
 			logging.Log(logging.LevelDebug, fmt.Sprintf("broker: forwarding notification %s", envelope.Method))
 			_ = client.sendNotification(envelope.Method, envelope.Params)
 		}
+	}
+}
+
+// forwardBrokerRequest sends one client request to the language server and
+// writes the response back on bc.
+func forwardBrokerRequest(ctx context.Context, bc *brokerConn, client *LSPClient, id json.RawMessage, method string, params any) {
+	defer func() {
+		if r := recover(); r != nil {
+			logging.Log(logging.LevelWarning, fmt.Sprintf("daemon: panic forwarding %s: %v", method, r))
+		}
+	}()
+	logging.Log(logging.LevelDebug, fmt.Sprintf("broker: forwarding request %s (id=%s)", method, string(id)))
+	result, err := client.sendRequest(ctx, method, params)
+	var response []byte
+	if err != nil {
+		logging.Log(logging.LevelDebug, fmt.Sprintf("broker: request %s error: %v", method, err))
+		response, _ = json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      id,
+			"error":   map[string]any{"code": -32603, "message": err.Error()},
+		})
+	} else {
+		logging.Log(logging.LevelDebug, fmt.Sprintf("broker: request %s success (result %d bytes)", method, len(result)))
+		response, _ = json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      id,
+			"result":  result,
+		})
+	}
+	if err := bc.write(response); err != nil {
+		logging.Log(logging.LevelDebug, fmt.Sprintf("broker: failed to write response: %v", err))
 	}
 }
 
