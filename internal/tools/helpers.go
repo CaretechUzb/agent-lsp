@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	gcf "github.com/blackwell-systems/agent-lsp/internal/encoding/gcf"
 	"github.com/blackwell-systems/agent-lsp/internal/lsp"
@@ -59,11 +60,60 @@ func WithDocument[T any](
 
 	fileURI := CreateFileURI(filePath)
 
+	// Record before opening: OpenDocument tracks the URI as open even when
+	// the didOpen send fails, so it must still be closed afterwards.
+	if t, ok := ctx.Value(openedDocsKey{}).(*openedDocs); ok {
+		t.record(fileURI)
+	}
 	if err := client.OpenDocument(ctx, fileURI, string(content), languageID); err != nil {
 		return zero, fmt.Errorf("opening document %s: %w", filePath, err)
 	}
 
 	return cb(fileURI)
+}
+
+// openedDocsKey is the context key under which WithClosingDocuments stores
+// its *openedDocs.
+type openedDocsKey struct{}
+
+// openedDocs records the URIs WithDocument opened under one
+// WithClosingDocuments context. Safe for concurrent use.
+type openedDocs struct {
+	mu   sync.Mutex
+	uris map[string]struct{}
+}
+
+func (o *openedDocs) record(uri string) {
+	o.mu.Lock()
+	o.uris[uri] = struct{}{}
+	o.mu.Unlock()
+}
+
+// WithClosingDocuments returns a context under which every document opened
+// through WithDocument is recorded, and a function that sends didClose for
+// each recorded document that was not already open when
+// WithClosingDocuments was called. Documents the user or agent opened
+// before stay open. Tools that open many files to answer one call (e.g.
+// blast_radius) use it so those files do not stay open on the language
+// server. Call the returned function once the work is done, typically with
+// defer; CloseDocument ignores ctx, so a cancelled context is fine.
+func WithClosingDocuments(ctx context.Context, client *lsp.LSPClient) (context.Context, func()) {
+	before := map[string]struct{}{}
+	for _, uri := range client.GetOpenDocuments() {
+		before[uri] = struct{}{}
+	}
+	t := &openedDocs{uris: map[string]struct{}{}}
+	closeOpened := func() {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		for uri := range t.uris {
+			if _, wasOpen := before[uri]; !wasOpen {
+				_ = client.CloseDocument(ctx, uri)
+			}
+		}
+		t.uris = map[string]struct{}{}
+	}
+	return context.WithValue(ctx, openedDocsKey{}, t), closeOpened
 }
 
 // CreateFileURI converts an absolute file path to a file:// URI.

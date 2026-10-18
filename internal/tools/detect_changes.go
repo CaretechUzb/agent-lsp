@@ -189,7 +189,8 @@ func enrichSymbols(impactData map[string]any) {
 	changedSymbols, _ := impactData["changed_symbols"].([]any)
 	nonTestCallers, _ := impactData["non_test_callers"].([]any)
 
-	// Index non-test callers by symbol name.
+	// Index non-test callers by the symbol they reference. "name" is the
+	// enclosing caller; "target" is the changed symbol.
 	callersBySymbol := map[string][]symbolRef{}
 	for _, raw := range nonTestCallers {
 		c, ok := raw.(map[string]any)
@@ -197,9 +198,13 @@ func enrichSymbols(impactData map[string]any) {
 			continue
 		}
 		name, _ := c["name"].(string)
+		target, _ := c["target"].(string)
+		if target == "" {
+			target = name
+		}
 		file, _ := c["file"].(string)
 		line, _ := c["line"].(float64)
-		callersBySymbol[name] = append(callersBySymbol[name], symbolRef{
+		callersBySymbol[target] = append(callersBySymbol[target], symbolRef{
 			Name: name,
 			File: file,
 			Line: int(line),
