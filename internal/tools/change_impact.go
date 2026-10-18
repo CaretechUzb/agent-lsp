@@ -115,6 +115,11 @@ func HandleGetChangeImpact(ctx context.Context, client *lsp.LSPClient, args map[
 	ctx, cancel := context.WithTimeout(ctx, changeImpactTimeout)
 	defer cancel()
 
+	// Close the changed, caller and test files this call opens (up to
+	// maxCallerSymbolFiles plus every test file), keeping ones already open.
+	ctx, closeOpened := WithClosingDocuments(ctx, client)
+	defer closeOpened()
+
 	// Decode changed_files (arrives as []any from JSON).
 	rawFiles, ok := args["changed_files"].([]any)
 	if !ok || len(rawFiles) == 0 {

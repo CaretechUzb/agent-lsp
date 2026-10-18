@@ -3,11 +3,78 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/blackwell-systems/agent-lsp/internal/lsp"
 	gcfgo "github.com/blackwell-systems/gcf-go"
 )
+
+// TestWithClosingDocuments_ClosesOnlyNewlyOpened checks that the close
+// function drops the documents opened under the context and keeps the ones
+// that were open before. The client has no server, so each didOpen send
+// fails, but OpenDocument still tracks the URI as open, which is what the
+// tracker has to undo.
+func TestWithClosingDocuments_ClosesOnlyNewlyOpened(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("x = 1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		clean, err := ValidateFilePath(p, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return clean
+	}
+	pre, fresh := write("pre.py"), write("fresh.py")
+	preURI, freshURI := CreateFileURI(pre), CreateFileURI(fresh)
+
+	client := lsp.NewLSPClient("fake", nil)
+	_ = client.OpenDocument(context.Background(), preURI, "x = 1\n", "python")
+
+	ctx, closeOpened := WithClosingDocuments(context.Background(), client)
+	open := func(path string) {
+		_, _ = WithDocument[struct{}](ctx, client, path, "python", func(string) (struct{}, error) {
+			return struct{}{}, nil
+		})
+	}
+	open(pre)
+	open(fresh)
+	open(fresh) // a second open of the same file is closed once
+
+	isOpen := func(uri string) bool {
+		for _, u := range client.GetOpenDocuments() {
+			if u == uri {
+				return true
+			}
+		}
+		return false
+	}
+	if !isOpen(freshURI) {
+		t.Fatalf("%s not tracked as open before close", freshURI)
+	}
+	closeOpened()
+	if isOpen(freshURI) {
+		t.Errorf("%s still open after close; want closed", freshURI)
+	}
+	if !isOpen(preURI) {
+		t.Errorf("%s closed; it was open before the call and must stay open", preURI)
+	}
+
+	// Without the tracker context, WithDocument leaves documents open.
+	open2 := write("plain.py")
+	_, _ = WithDocument[struct{}](context.Background(), client, open2, "python", func(string) (struct{}, error) {
+		return struct{}{}, nil
+	})
+	closeOpened()
+	if !isOpen(CreateFileURI(open2)) {
+		t.Errorf("document opened outside the tracker context was closed")
+	}
+}
 
 func TestOutputFormatFromContext_Default(t *testing.T) {
 	ctx := context.Background()

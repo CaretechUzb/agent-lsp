@@ -779,6 +779,7 @@ understand blast radius.
 - GCF graph output: caller nodes are `dir.Caller#file.go:LINE` (first reference line) with one `@target<@caller calls` edge per changed symbol they reference.
 - `sync_guarded`: present and `true` on symbols that are methods on types containing synchronization primitives (Mutex, RWMutex, Lock, atomic). Covers Go, Java, Rust, Python, C/C++ primitives. Helps agents distinguish mutex-guarded code from pure functions when assessing risk.
 - `warnings` contains messages for any `GetReferences` calls that failed (non-fatal).
+- Files the call opens on the language server (changed files, caller files, test files) are closed again before it returns; files that were already open stay open.
 
 ---
 
