@@ -6,10 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
+	gcf "github.com/blackwell-systems/agent-lsp/internal/encoding/gcf"
 	"github.com/blackwell-systems/agent-lsp/internal/lsp"
 	"github.com/blackwell-systems/agent-lsp/internal/types"
+	gcfgo "github.com/blackwell-systems/gcf-go"
 )
 
 func TestIsTestFile(t *testing.T) {
@@ -343,11 +346,37 @@ func TestCollectExportedSymbols_NestedScopeFiltering(t *testing.T) {
 		assertSymbolNames(t, exported, "Hub", "(*Hub).SetSender")
 	})
 
-	t.Run("top-level variable in non-Go still included", func(t *testing.T) {
+	t.Run("top-level variable in non-Go, non-Python still included", func(t *testing.T) {
 		topVar := types.DocumentSymbol{Name: "GlobalCounter", Kind: 13}
 		var exported []exportedSymbol
-		collectExportedSymbols([]types.DocumentSymbol{topVar}, "config.py", "python", &exported, true, 0, 0)
+		collectExportedSymbols([]types.DocumentSymbol{topVar}, "config.js", "javascript", &exported, true, 0, 0)
 		assertSymbolNames(t, exported, "GlobalCounter")
+	})
+
+	// odoo-ls reports imports and module-level assignments as top-level
+	// Variables; they must not become targets at scope=exported.
+	pythonModule := []types.DocumentSymbol{
+		{Name: "api", Kind: 13},       // from odoo import api
+		{Name: "_logger", Kind: 13},   // module-level assignment
+		{Name: "json", Kind: 2},       // import (pylsp reports Module)
+		{Name: "MAX_LINES", Kind: 14}, // module constant (pyright)
+		{Name: "helper", Kind: 12},    // module function
+		{Name: "SaleOrder", Kind: 5, Children: []types.DocumentSymbol{
+			{Name: "_name", Kind: 13},          // class attribute
+			{Name: "action_confirm", Kind: 12}, // odoo-ls reports methods as Function
+		}},
+	}
+
+	t.Run("python imports and module variables excluded at scope=exported", func(t *testing.T) {
+		var exported []exportedSymbol
+		collectExportedSymbols(pythonModule, "sale_order.py", "python", &exported, true, 0, 0)
+		assertSymbolNames(t, exported, "MAX_LINES", "helper", "SaleOrder", "action_confirm")
+	})
+
+	t.Run("python imports and module variables kept at scope=all", func(t *testing.T) {
+		var all []exportedSymbol
+		collectAllSymbols(pythonModule, "sale_order.py", "python", &all, true)
+		assertSymbolNames(t, all, "api", "_logger", "json", "MAX_LINES", "helper", "SaleOrder", "_name", "action_confirm")
 	})
 }
 
@@ -524,7 +553,10 @@ func TestChangeImpact_EncodeResult_GCF(t *testing.T) {
 
 func TestBuildChangeImpactPayload(t *testing.T) {
 	changed := []symbolRef{{Name: "Foo", File: "/src/pkg/foo.go", Line: 10}}
-	callers := []symbolRef{{Name: "Bar", File: "/src/pkg/bar.go", Line: 20}}
+	callers := []callerRef{{
+		symbolRef: symbolRef{Name: "Bar", File: "/src/pkg/bar.go", Line: 20},
+		Target:    "Foo", TargetFile: "/src/pkg/foo.go", enclosed: true,
+	}}
 	tests := []symbolRef{{Name: "TestFoo", File: "/src/pkg/foo_test.go", Line: 5}}
 
 	p := buildChangeImpactPayload(changed, callers, tests)
@@ -532,52 +564,319 @@ func TestBuildChangeImpactPayload(t *testing.T) {
 	if p.Tool != "blast_radius" {
 		t.Errorf("wrong tool: got %q, want %q", p.Tool, "blast_radius")
 	}
-	if len(p.Symbols) < 3 {
-		t.Errorf("expected >= 3 symbols, got %d", len(p.Symbols))
+	if len(p.Symbols) != 3 {
+		t.Fatalf("expected 3 symbols, got %d: %+v", len(p.Symbols), p.Symbols)
 	}
-	// Verify target symbol is distance 0
-	if p.Symbols[0].Distance != 0 {
-		t.Errorf("target symbol should be distance 0, got %d", p.Symbols[0].Distance)
+	// Verify target symbol is distance 0 with score 1.0
+	if p.Symbols[0].Distance != 0 || p.Symbols[0].Score != 1.0 {
+		t.Errorf("target symbol should be distance 0 score 1.0, got %+v", p.Symbols[0])
 	}
-	// Verify target symbol score is 1.0
-	if p.Symbols[0].Score != 1.0 {
-		t.Errorf("target symbol score should be 1.0, got %f", p.Symbols[0].Score)
-	}
-	// Verify caller is distance 1
+	// Caller is distance 1 and its qname carries the reference location.
 	if p.Symbols[1].Distance != 1 {
 		t.Errorf("caller symbol should be distance 1, got %d", p.Symbols[1].Distance)
 	}
+	if want := "src/pkg.Bar#bar.go:20"; p.Symbols[1].QualifiedName != want {
+		t.Errorf("caller qname = %q, want %q", p.Symbols[1].QualifiedName, want)
+	}
 	// Verify test function is distance 1 with score 0.7
-	if p.Symbols[2].Distance != 1 {
-		t.Errorf("test symbol should be distance 1, got %d", p.Symbols[2].Distance)
+	if p.Symbols[2].Distance != 1 || p.Symbols[2].Score != 0.7 {
+		t.Errorf("test symbol should be distance 1 score 0.7, got %+v", p.Symbols[2])
 	}
-	if p.Symbols[2].Score != 0.7 {
-		t.Errorf("test symbol score should be 0.7, got %f", p.Symbols[2].Score)
-	}
-	// Verify edges exist
 	if len(p.Edges) != 1 {
-		t.Errorf("expected 1 edge, got %d", len(p.Edges))
+		t.Fatalf("expected 1 edge, got %d", len(p.Edges))
 	}
-	if len(p.Edges) > 0 && p.Edges[0].EdgeType != "calls" {
-		t.Errorf("edge type should be 'calls', got %q", p.Edges[0].EdgeType)
+	e := p.Edges[0]
+	if e.EdgeType != "calls" {
+		t.Errorf("edge type should be 'calls', got %q", e.EdgeType)
+	}
+	if e.Source == e.Target {
+		t.Errorf("self-edge: %+v", e)
+	}
+	if e.Source != p.Symbols[1].QualifiedName {
+		t.Errorf("edge source = %q, want caller %q", e.Source, p.Symbols[1].QualifiedName)
+	}
+	if want := gcf.QualifiedName("/src/pkg/foo.go", "Foo"); e.Target != want {
+		t.Errorf("edge target = %q, want target %q", e.Target, want)
+	}
+}
+
+func TestBuildChangeImpactPayload_GCFRoundTrip(t *testing.T) {
+	changed := []symbolRef{{Name: "action_confirm", File: "/odoo/addons/sale/models/sale_order.py", Line: 10}}
+	callers := []callerRef{
+		{
+			symbolRef: symbolRef{Name: "SaleOrderLine.write", File: "/odoo/addons/sale/models/sale_order_line.py", Line: 412},
+			Target:    "action_confirm", TargetFile: "/odoo/addons/sale/models/sale_order.py", enclosed: true,
+		},
+		{
+			// Unresolved caller: named by location.
+			symbolRef: symbolRef{Name: "hooks.py:7", File: "/odoo/addons/sale/hooks.py", Line: 7},
+			Target:    "action_confirm", TargetFile: "/odoo/addons/sale/models/sale_order.py",
+		},
+	}
+	p := buildChangeImpactPayload(changed, callers, nil)
+	decoded, err := gcfgo.Decode(gcfgo.Encode(p))
+	if err != nil {
+		t.Fatalf("decode: %v\n%s", err, gcfgo.Encode(p))
+	}
+	names := map[string]bool{}
+	for _, s := range decoded.Symbols {
+		names[s.QualifiedName] = true
+	}
+	for _, want := range []string{
+		"sale/models.action_confirm",
+		"sale/models.SaleOrderLine.write#sale_order_line.py:412",
+		"addons/sale.hooks.py:7",
+	} {
+		if !names[want] {
+			t.Errorf("decoded symbols missing %q; got %v", want, names)
+		}
+	}
+	if len(decoded.Edges) != 2 {
+		t.Fatalf("expected 2 decoded edges, got %d", len(decoded.Edges))
+	}
+	for _, e := range decoded.Edges {
+		if e.Source == e.Target || e.Target != "sale/models.action_confirm" {
+			t.Errorf("bad decoded edge %+v", e)
+		}
 	}
 }
 
 func TestBuildChangeImpactPayload_Dedup(t *testing.T) {
-	// Duplicate callers should be deduplicated.
-	callers := []symbolRef{
-		{Name: "Bar", File: "/src/pkg/bar.go", Line: 20},
-		{Name: "Bar", File: "/src/pkg/bar.go", Line: 25},
-	}
-	p := buildChangeImpactPayload(nil, callers, nil)
-	// Only one caller symbol should appear (deduplicated by qualified name).
-	callerCount := 0
-	for _, s := range p.Symbols {
-		if s.Distance == 1 {
-			callerCount++
+	ref := func(name, file string, line int, target string) callerRef {
+		return callerRef{
+			symbolRef: symbolRef{Name: name, File: file, Line: line},
+			Target:    target, TargetFile: "/src/pkg/foo.go", enclosed: true,
 		}
 	}
-	if callerCount != 1 {
-		t.Errorf("expected 1 deduplicated caller, got %d", callerCount)
+	changed := []symbolRef{
+		{Name: "Foo", File: "/src/pkg/foo.go", Line: 10},
+		{Name: "Baz", File: "/src/pkg/foo.go", Line: 30},
+	}
+	callers := []callerRef{
+		ref("Bar", "/src/pkg/bar.go", 20, "Foo"),
+		ref("Bar", "/src/pkg/bar.go", 25, "Foo"), // same caller, same target
+		ref("Bar", "/src/pkg/bar.go", 27, "Baz"), // same caller, second target
+	}
+	p := buildChangeImpactPayload(changed, callers, nil)
+	// One caller symbol (deduplicated by file and name), first line in its qname.
+	var callerSyms []string
+	for _, s := range p.Symbols {
+		if s.Distance == 1 {
+			callerSyms = append(callerSyms, s.QualifiedName)
+		}
+	}
+	if len(callerSyms) != 1 || callerSyms[0] != "src/pkg.Bar#bar.go:20" {
+		t.Errorf("expected one caller src/pkg.Bar#bar.go:20, got %v", callerSyms)
+	}
+	// One edge per target.
+	if len(p.Edges) != 2 {
+		t.Fatalf("expected 2 edges, got %d: %+v", len(p.Edges), p.Edges)
+	}
+	if p.Edges[0].Target != "src/pkg.Foo" || p.Edges[1].Target != "src/pkg.Baz" {
+		t.Errorf("unexpected edge targets: %+v", p.Edges)
+	}
+}
+
+func TestBuildChangeImpactPayload_CallerIsTarget(t *testing.T) {
+	changed := []symbolRef{
+		{Name: "Foo", File: "/src/pkg/foo.go", Line: 10},
+		{Name: "Baz", File: "/src/pkg/foo.go", Line: 30},
+	}
+	callers := []callerRef{{
+		// Baz (a changed symbol) calls Foo.
+		symbolRef: symbolRef{Name: "Baz", File: "/src/pkg/foo.go", Line: 31},
+		Target:    "Foo", TargetFile: "/src/pkg/foo.go", enclosed: true,
+	}}
+	p := buildChangeImpactPayload(changed, callers, nil)
+	if len(p.Symbols) != 2 {
+		t.Errorf("caller that is a target must reuse its node; got symbols %+v", p.Symbols)
+	}
+	if len(p.Edges) != 1 || p.Edges[0].Source != "src/pkg.Baz" || p.Edges[0].Target != "src/pkg.Foo" {
+		t.Errorf("expected edge src/pkg.Baz -> src/pkg.Foo, got %+v", p.Edges)
+	}
+}
+
+func TestBuildChangeImpactPayload_NoSelfEdgeOnQnameCollision(t *testing.T) {
+	// Two same-named targets in one directory share a qname (QualifiedName
+	// drops the file name). b.go's create calling a.go's create must not
+	// become a self-edge.
+	changed := []symbolRef{
+		{Name: "create", File: "/src/pkg/a.go", Line: 10},
+		{Name: "create", File: "/src/pkg/b.go", Line: 10},
+	}
+	callers := []callerRef{{
+		symbolRef: symbolRef{Name: "create", File: "/src/pkg/b.go", Line: 12},
+		Target:    "create", TargetFile: "/src/pkg/a.go", enclosed: true,
+	}}
+	p := buildChangeImpactPayload(changed, callers, nil)
+	for _, e := range p.Edges {
+		if e.Source == e.Target {
+			t.Errorf("self-edge emitted: %+v", e)
+		}
+	}
+	if len(p.Symbols) != 1 {
+		t.Errorf("duplicate target qnames should collapse to one symbol, got %+v", p.Symbols)
+	}
+}
+
+func TestFindEnclosingCallable(t *testing.T) {
+	rng := func(start, end int) types.Range {
+		return types.Range{Start: types.Position{Line: start}, End: types.Position{Line: end, Character: 80}}
+	}
+	syms := []types.DocumentSymbol{
+		{Name: "api", Kind: 13, Range: rng(0, 0)},
+		{Name: "SaleOrder", Kind: 5, Range: rng(2, 20), Children: []types.DocumentSymbol{
+			{Name: "_name", Kind: 13, Range: rng(3, 3)},
+			{Name: "action_confirm", Kind: 12, Range: rng(5, 12), Children: []types.DocumentSymbol{
+				{Name: "self", Kind: 13, Range: rng(5, 5)},
+				{Name: "vals", Kind: 13, Range: rng(7, 7)}, // vals = target()
+			}},
+		}},
+	}
+	cases := []struct {
+		line int
+		want string
+	}{
+		{7, "SaleOrder.action_confirm"}, // local variable is not the caller
+		{3, "SaleOrder"},                // class body
+		{0, ""},                         // module level: no callable
+	}
+	for _, tc := range cases {
+		if _, got := findEnclosingCallable(syms, tc.line); got != tc.want {
+			t.Errorf("line %d: got %q, want %q", tc.line, got, tc.want)
+		}
+	}
+}
+
+func TestPartitionReferences(t *testing.T) {
+	const (
+		target    = "/proj/sale/models/sale_order.py"
+		lineFile  = "/proj/sale/models/sale_order_line.py"
+		hooksFile = "/proj/sale/hooks.py"
+		testFile  = "/proj/sale/tests/test_sale.py"
+		uncached  = "/proj/stock/models/stock_move.py"
+	)
+	rng := func(start, end int) types.Range {
+		return types.Range{Start: types.Position{Line: start}, End: types.Position{Line: end, Character: 80}}
+	}
+	loc := func(file string, line int) types.Location {
+		return types.Location{URI: CreateFileURI(file), Range: types.Range{Start: types.Position{Line: line, Character: 8}}}
+	}
+
+	cache := &sync.Map{}
+	cache.Store(lineFile, []types.DocumentSymbol{
+		{Name: "SaleOrderLine", Kind: 5, Range: rng(0, 50), Children: []types.DocumentSymbol{
+			{Name: "write", Kind: 12, Range: rng(10, 20), Children: []types.DocumentSymbol{
+				{Name: "res", Kind: 13, Range: rng(12, 12)},
+			}},
+		}},
+	})
+	cache.Store(hooksFile, []types.DocumentSymbol{{Name: "env", Kind: 13, Range: rng(6, 6)}})
+	cache.Store(testFile, []types.DocumentSymbol{
+		{Name: "TestSale", Kind: 5, Range: rng(0, 40), Children: []types.DocumentSymbol{
+			{Name: "test_confirm", Kind: 12, Range: rng(5, 15), SelectionRange: rng(5, 5), Children: []types.DocumentSymbol{
+				{Name: "order", Kind: 13, Range: rng(8, 8)},
+			}},
+		}},
+	})
+
+	refs := []symbolRefs{{
+		Symbol: exportedSymbol{Name: "action_confirm", File: target, Line: 101, Range: rng(100, 130)},
+		Locs: []types.Location{
+			loc(target, 100),  // the declaration itself (odoo-ls ignores includeDeclaration=false)
+			loc(target, 120),  // recursive self-call inside the body
+			loc(lineFile, 12), // inside SaleOrderLine.write, on a local assignment line
+			loc(hooksFile, 6), // module level
+			loc(uncached, 3),  // file past the prefetch cap
+			loc(testFile, 8),  // inside a test, on a local assignment line
+			loc(target, 140),  // same file, outside the target's range
+		},
+	}}
+
+	// nil client: every file is pre-seeded or uncached-by-design, so no LSP call is made.
+	cache.Store(target, []types.DocumentSymbol{
+		{Name: "SaleOrder", Kind: 5, Range: rng(90, 200), Children: []types.DocumentSymbol{
+			{Name: "action_confirm", Kind: 12, Range: rng(100, 130)},
+			{Name: "action_cancel", Kind: 12, Range: rng(135, 150)},
+		}},
+	})
+	part := partitionReferences(context.Background(), nil, cache, refs, nil, "")
+
+	type got struct {
+		name string
+		line int
+	}
+	var callers []got
+	for _, c := range part.nonTestCallers {
+		if c.Target != "action_confirm" || c.TargetFile != target {
+			t.Errorf("caller %+v has wrong target", c)
+		}
+		if c.Name == "action_confirm" {
+			t.Errorf("caller named after the target: %+v", c)
+		}
+		callers = append(callers, got{c.Name, c.Line})
+	}
+	want := []got{
+		{"SaleOrderLine.write", 13},
+		{"hooks.py:7", 7},
+		{"stock_move.py:4", 4},
+		{"SaleOrder.action_cancel", 141},
+	}
+	if len(callers) != len(want) {
+		t.Fatalf("non-test callers = %v, want %v", callers, want)
+	}
+	for i := range want {
+		if callers[i] != want[i] {
+			t.Errorf("caller[%d] = %v, want %v", i, callers[i], want[i])
+		}
+	}
+	if !part.nonTestCallers[0].enclosed || part.nonTestCallers[1].enclosed {
+		t.Errorf("enclosed flags wrong: %+v", part.nonTestCallers)
+	}
+	if len(part.testFunctions) != 1 || part.testFunctions[0].Name != "test_confirm" || part.testFunctions[0].Line != 6 {
+		t.Errorf("test functions = %+v, want test_confirm at line 6", part.testFunctions)
+	}
+	if len(part.symbolsWithCallers) != 1 || len(part.symbolsWithCallers[0].NonTestCallers) != 4 {
+		t.Errorf("per-symbol callers wrong: %+v", part.symbolsWithCallers)
+	}
+}
+
+func TestRefInsideSymbol_PathNormalization(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.py")
+	if err := os.WriteFile(file, []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sym := exportedSymbol{Name: "f", File: file, Range: types.Range{End: types.Position{Line: 5}}}
+	paths := pathNormalizer{}
+	if !refInsideSymbol(paths, sym, resolved, types.Position{Line: 2}) {
+		t.Errorf("symlink-resolved path of the same file should match")
+	}
+	if refInsideSymbol(paths, sym, resolved, types.Position{Line: 6}) {
+		t.Errorf("position past the range end should not match")
+	}
+	if refInsideSymbol(paths, exportedSymbol{Name: "f", File: file}, file, types.Position{Line: 0}) {
+		t.Errorf("unknown (zero) range should never match")
+	}
+}
+
+func TestEnrichSymbols_IndexesByTarget(t *testing.T) {
+	impactData := map[string]any{
+		"changed_symbols": []any{
+			map[string]any{"name": "Foo", "file": "/project/pkg/a.go", "line": float64(3)},
+		},
+		"non_test_callers": []any{
+			// name is the enclosing caller; target is the changed symbol.
+			map[string]any{"name": "Bar", "file": "/project/other/b.go", "line": float64(9), "target": "Foo"},
+		},
+	}
+	enrichSymbols(impactData)
+	sym := impactData["changed_symbols"].([]any)[0].(map[string]any)
+	if sym["risk"] != "high" {
+		t.Errorf("risk = %v, want high (cross-package caller of Foo)", sym["risk"])
 	}
 }

@@ -760,7 +760,7 @@ understand blast radius.
     { "name": "TestGetReferences", "file": "internal/lsp/client_test.go", "line": 42 }
   ],
   "non_test_callers": [
-    { "name": "LSPClient", "file": "internal/tools/analysis.go", "line": 67, "sync_guarded": true }
+    { "name": "NewAnalyzer", "file": "internal/tools/analysis.go", "line": 67, "target": "LSPClient" }
   ],
   "summary": "Found 1 changed symbols with 1 test references across 1 test files.",
   "warnings": []
@@ -773,7 +773,10 @@ understand blast radius.
 - `changed_symbols` lists each analyzed symbol with its file and 1-based line number.
 - `test_functions` contains the enclosing test function name for each test file reference.
 - `test_files` is the deduplicated set of test files that reference any changed symbol.
-- `non_test_callers` is the blast radius for production code.
+- `non_test_callers` is the blast radius for production code. Each entry is one reference: `name` is the function/method/class enclosing it (`file.py:LINE` when none encloses it, e.g. module-level code or a file past the 128-file lookup cap), `line` is the reference line, and `target` is the changed symbol it references.
+- References inside a changed symbol's own declaration (the definition itself, recursive calls) are not callers and are dropped.
+- Python at `scope=exported`: only module-level classes, functions and constants are analyzed; imports and module-level variables are skipped (`scope=all` keeps them).
+- GCF graph output: caller nodes are `dir.Caller#file.go:LINE` (first reference line) with one `@target<@caller calls` edge per changed symbol they reference.
 - `sync_guarded`: present and `true` on symbols that are methods on types containing synchronization primitives (Mutex, RWMutex, Lock, atomic). Covers Go, Java, Rust, Python, C/C++ primitives. Helps agents distinguish mutex-guarded code from pure functions when assessing risk.
 - `warnings` contains messages for any `GetReferences` calls that failed (non-fatal).
 
@@ -867,7 +870,7 @@ call that answers "what did I break?" without manually listing changed files.
     { "name": "ServeHTTP", "file": "pkg/handler.go", "line": 42, "risk": "high" }
   ],
   "non_test_callers": [
-    { "name": "ServeHTTP", "file": "cmd/server/main.go", "line": 15 }
+    { "name": "main", "file": "cmd/server/main.go", "line": 15, "target": "ServeHTTP" }
   ],
   "scope": "staged"
 }
